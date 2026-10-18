@@ -4,25 +4,45 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
 let pool;
+let activeDatabase;
+
+function connectionOptions(includeDatabase = true) {
+  if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL não configurada');
+  const url = new URL(process.env.DATABASE_URL);
+  const database = activeDatabase || decodeURIComponent(url.pathname.slice(1));
+  return {
+    host: url.hostname,
+    port: Number(url.port || 4000),
+    user: decodeURIComponent(url.username),
+    password: decodeURIComponent(url.password),
+    ...(includeDatabase ? { database } : {}),
+    ssl: { minVersion: 'TLSv1.2', rejectUnauthorized: true },
+    timezone: 'Z',
+  };
+}
 
 export function db() {
   if (!pool) {
-    if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL não configurada');
-    const url = new URL(process.env.DATABASE_URL);
     pool = mysql.createPool({
-      host: url.hostname,
-      port: Number(url.port || 4000),
-      user: decodeURIComponent(url.username),
-      password: decodeURIComponent(url.password),
-      database: decodeURIComponent(url.pathname.slice(1)),
-      ssl: { minVersion: 'TLSv1.2', rejectUnauthorized: true },
+      ...connectionOptions(),
       waitForConnections: true,
       connectionLimit: 10,
       enableKeepAlive: true,
-      timezone: 'Z',
     });
   }
   return pool;
+}
+
+async function prepareDatabase() {
+  const selected = connectionOptions().database.toLowerCase();
+  if (!['', 'sys', 'mysql', 'information_schema', 'performance_schema'].includes(selected)) return;
+  const connection = await mysql.createConnection(connectionOptions(false));
+  try {
+    await connection.query('CREATE DATABASE IF NOT EXISTS `organizador`');
+    activeDatabase = 'organizador';
+  } finally {
+    await connection.end();
+  }
 }
 
 const schema = [
@@ -86,6 +106,7 @@ const schema = [
 ];
 
 export async function initializeDatabase() {
+  await prepareDatabase();
   const connection = await db().getConnection();
   try {
     for (const statement of schema) await connection.query(statement);

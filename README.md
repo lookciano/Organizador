@@ -24,6 +24,7 @@ Aplicação web para reunir informações de projetos, acompanhar assuntos e ger
 ## Configuração
 
 1. Crie uma instância TiDB Cloud e copie a URL MySQL da conexão TLS para `DATABASE_URL`.
+   Se a URL apontar para um banco de sistema como `sys`, a aplicação criará e usará automaticamente o banco `organizador`.
 2. No Render, conecte este repositório como **Web Service**. O arquivo `render.yaml` contém build, start e variáveis necessárias.
 3. Configure as variáveis sensíveis no painel do Render: `DATABASE_URL`, `BOOTSTRAP_EMAIL`, `BOOTSTRAP_PASSWORD`, `OPENAI_API_KEY`, `APP_ORIGIN`, `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD` e `SMTP_FROM`. `BOOTSTRAP_PASSWORD` deve ter pelo menos 12 caracteres. `APP_ORIGIN` deve ser a URL HTTPS do serviço, sem barra final.
 4. O serviço cria as tabelas e a primeira conta no início. Entre com `BOOTSTRAP_EMAIL` e `BOOTSTRAP_PASSWORD`, crie o projeto e escolha o modelo Grande Sertão.
