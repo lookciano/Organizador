@@ -1,5 +1,7 @@
 # Organizador Grande Sertão
 
+[![Publicar no Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/lookciano/Organizador)
+
 Aplicação web para reunir informações de projetos, acompanhar assuntos e gerar visões por responsável, fornecedor e categoria. O modelo inicial de categorias veio dos títulos e subtítulos do relatório Grande Sertão e pode ser alterado separadamente em cada projeto.
 
 ## O que o MVP faz
