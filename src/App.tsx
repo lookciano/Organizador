@@ -9,7 +9,7 @@ type Item = { id: string; node_id: string | null; title: string; summary: string
 type Member = { id: string; email: string; role: string };
 type Invitation = { id: string; email: string; role: string; expires_at: string; accepted_at: string | null; created_at: string };
 type Update = { id: string; summary: string; evidence: string; previous_status: string | null; new_status: string; created_at: string; source_title: string | null; author_email: string | null };
-type RecentHistory = { item_id: string; summary: string; created_at: string; source_title: string | null };
+type HistoryEntry = { id: string; item_id: string; summary: string; evidence: string; created_at: string; source_title: string | null; author_email: string | null };
 type State = { user: User; projects: Project[]; project?: Project; nodes?: Node[]; sources?: Source[]; items?: Item[]; members?: Member[]; invitations?: Invitation[] };
 type View = "overview" | "items" | "sources" | "structure" | "people" | "reports";
 
@@ -22,14 +22,15 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
 
 const post = <T,>(path: string, body: unknown, method = "POST") => api<T>(path, { method, body: JSON.stringify(body) });
 const date = (value: string | null | undefined) => value ? new Date(value).toLocaleDateString("pt-BR") : "—";
+const dateTime = (value: string | null | undefined) => value ? new Date(value).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "—";
 const statusName: Record<string, string> = { pendente: "Pendente", em_andamento: "Em andamento", bloqueado: "Bloqueado", concluido: "Concluído", informativo: "Informativo" };
 const views: { id: View; label: string; icon: string }[] = [
-  { id: "overview", label: "Visão geral", icon: "◫" },
+  { id: "overview", label: "Relatório vivo", icon: "◫" },
   { id: "items", label: "Assuntos", icon: "▤" },
   { id: "sources", label: "Conversa", icon: "▧" },
   { id: "structure", label: "Estrutura", icon: "⌘" },
   { id: "people", label: "Pessoas", icon: "♙" },
-  { id: "reports", label: "Relatórios", icon: "▣" },
+  { id: "reports", label: "Matrizes e PDF", icon: "▣" },
 ];
 
 function isOverdue(item: Item) {
@@ -44,7 +45,7 @@ export default function App() {
   const inviteToken = new URLSearchParams(window.location.search).get("convite");
   const [state, setState] = useState<State | null>(null);
   const [projectId, setProjectId] = useState(localStorage.getItem("organizador_project") || "");
-  const [view, setView] = useState<View>("sources");
+  const [view, setView] = useState<View>("overview");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -53,6 +54,7 @@ export default function App() {
   const [showManual, setShowManual] = useState(false);
   const [selectedItem, setSelectedItem] = useState<Item | null>(null);
   const [updates, setUpdates] = useState<Update[]>([]);
+  const [syncedAt, setSyncedAt] = useState<string | null>(null);
 
   const refresh = useCallback(async (id = projectId) => {
     try {
@@ -70,6 +72,7 @@ export default function App() {
         next = await api<State>(`/api/state?projectId=${encodeURIComponent(fallback)}`);
       }
       setState(next);
+      setSyncedAt(new Date().toISOString());
       setError("");
     } catch (cause) {
       if (cause instanceof Error && cause.message.includes("login")) setState(null);
@@ -80,7 +83,15 @@ export default function App() {
 
   useEffect(() => { if (!inviteToken) void refresh(); else setLoading(false); }, [refresh, inviteToken]);
 
-  const chooseProject = (id: string) => { setProjectId(id); localStorage.setItem("organizador_project", id); setView("sources"); void refresh(id); };
+  useEffect(() => {
+    if (!state || !projectId || inviteToken) return;
+    const updateIfVisible = () => { if (!document.hidden) void refresh(projectId); };
+    const interval = window.setInterval(updateIfVisible, 60_000);
+    document.addEventListener("visibilitychange", updateIfVisible);
+    return () => { window.clearInterval(interval); document.removeEventListener("visibilitychange", updateIfVisible); };
+  }, [Boolean(state), projectId, inviteToken, refresh]);
+
+  const chooseProject = (id: string) => { setProjectId(id); localStorage.setItem("organizador_project", id); setView("overview"); void refresh(id); };
   const after = async (message = "Alterações salvas") => { await refresh(); setNotice(message); setTimeout(() => setNotice(""), 5000); };
   const openItem = async (item: Item) => {
     setSelectedItem(item);
@@ -117,7 +128,7 @@ export default function App() {
       {error && <div className="alert error" role="alert">{error}<button onClick={() => setError("")}>×</button></div>}
       {notice && <div className="alert success" role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
       {!project ? <CreateProject onCreated={(id) => chooseProject(id)} setBusy={setBusy} busy={busy} setError={setError} /> : <div className="content">
-        {view === "overview" && <><div className="page-heading"><div><div className="eyebrow">PAINEL DO PROJETO</div><h1>{project.name}</h1><p>{project.description || "Acompanhe decisões, ações e atualizações com o contexto de cada fonte."}</p></div><button className="button secondary" onClick={() => setView("reports")}>Gerar relatório ↗</button></div><div className="metric-grid"><Metric label="Assuntos ativos" value={counts.open} icon="◉" tone="teal" /><Metric label="Pontos de atenção" value={counts.attention} icon="!" tone="amber" /><Metric label="Atrasados" value={counts.overdue} icon="⌚" tone="red" /><Metric label="Concluídos" value={counts.done} icon="✓" tone="green" /></div><div className="two-columns"><section className="panel"><div className="panel-head"><div><h2>Pontos de atenção</h2><p>Assuntos que precisam de acompanhamento</p></div><button className="text-button" onClick={() => setView("items")}>Ver todos →</button></div>{items.filter((item) => item.attention || isOverdue(item) || item.status === "bloqueado").slice(0, 6).map((item) => <ItemRow key={item.id} item={item} onClick={() => void openItem(item)} />)}{!counts.attention && !counts.overdue && <Empty icon="✓" title="Nenhum ponto de atenção" text="Novas informações aparecerão aqui após a análise." />}</section><section className="panel"><div className="panel-head"><div><h2>Atividade recente</h2><p>Últimas fontes adicionadas ao projeto</p></div><button className="text-button" onClick={() => setView("sources")}>Ver fontes →</button></div>{sources.slice(0, 6).map((source) => <div className="activity-row" key={source.id}><div className="activity-icon">{source.kind === "file" ? "▧" : "≡"}</div><div><strong>{source.title}</strong><small>{source.file_name || (source.kind === "manual" ? "Registro manual" : "Texto ou transcrição")} · {date(source.created_at)}</small></div><span className={`source-state ${source.analysis_status}`}>{source.analysis_status === "completed" ? "Analisado" : source.analysis_status === "needs_key" ? "IA pendente" : source.analysis_status === "failed" ? "Falhou" : "Registrado"}</span></div>)}{!sources.length && <Empty icon="▧" title="Nenhuma fonte ainda" text="Adicione uma transcrição, mensagem ou arquivo para começar." />}</section></div></>}
+        {view === "overview" && <LivingReportView project={project} items={items} nodes={nodes} syncedAt={syncedAt} onRefresh={() => refresh(projectId)} onOpen={openItem} onCompose={() => { setView("sources"); setComposerFocus((value) => value + 1); }} />}
         {view === "items" && <ItemsView items={items} nodes={nodes} onOpen={openItem} onManual={() => setShowManual(true)} />}
         {view === "sources" && <SourcesView sources={sources} projectId={projectId} onRefresh={after} setError={setError} focusSignal={composerFocus} />}
         {view === "structure" && <StructureView nodes={nodes} projectId={projectId} owner={project.role === "owner"} onRefresh={after} setError={setError} />}
@@ -146,9 +157,105 @@ function CreateProject({ onCreated, busy, setBusy, setError }: { onCreated: (id:
   return <div className="content"><div className="empty-project"><div className="eyebrow">COMECE PELO CONTEXTO</div><h1>Crie seu primeiro projeto</h1><p>Organize informações em uma estrutura própria. Você pode começar com o modelo extraído do relatório Grande Sertão e alterá-lo depois.</p><form onSubmit={async (event) => { event.preventDefault(); setBusy(true); try { const result = await post<{ id: string }>("/api/projects", { name, description, withTemplate }); onCreated(result.id); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao criar projeto"); } finally { setBusy(false); } }}><label>Nome do projeto<input value={name} onChange={(event) => setName(event.target.value)} required minLength={3} /></label><label>Descrição <span>(opcional)</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} placeholder="Qual é o objetivo deste espaço?" /></label><label className="check-row"><input type="checkbox" checked={withTemplate} onChange={(event) => setWithTemplate(event.target.checked)} /><span>Usar a estrutura inicial do relatório Grande Sertão <small>8 seções, 50 subtítulos e 6 níveis adicionais</small></span></label><button className="button primary" disabled={busy}>{busy ? "Criando..." : "Criar projeto →"}</button></form></div></div>;
 }
 
-function Metric({ label, value, icon, tone }: { label: string; value: number; icon: string; tone: string }) { return <div className={`metric ${tone}`}><div className="metric-icon">{icon}</div><strong>{value}</strong><span>{label}</span></div>; }
 function Empty({ icon, title, text }: { icon: string; title: string; text: string }) { return <div className="empty"><div className="empty-icon">{icon}</div><strong>{title}</strong><p>{text}</p></div>; }
-function ItemRow({ item, onClick }: { item: Item; onClick: () => void }) { return <button className="item-row" onClick={onClick}><span className="item-dot" /><span className="item-main"><strong>{item.title}</strong><small>{[item.location, item.responsible, item.supplier].filter(Boolean).join(" · ") || "Sem classificação adicional"}</small><span className="item-latest">{item.latest_update || item.summary || "Sem atualização resumida"}</span><small className="item-update-date">Atualizado em {date(item.latest_update_at || item.updated_at)} · {item.update_count || 0} registro(s)</small></span><Status item={item} /><span className="row-arrow">→</span></button>; }
+
+function LivingReportView({ project, items, nodes, syncedAt, onRefresh, onOpen, onCompose }: {
+  project: Project;
+  items: Item[];
+  nodes: Node[];
+  syncedAt: string | null;
+  onRefresh: () => Promise<void>;
+  onOpen: (item: Item) => Promise<void>;
+  onCompose: () => void;
+}) {
+  const [itemHistory, setItemHistory] = useState<Record<string, HistoryEntry[]>>({});
+  const [historyError, setHistoryError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    api<{ updates: HistoryEntry[] }>(`/api/projects/${project.id}/history`)
+      .then(({ updates }) => {
+        if (!active) return;
+        const grouped: Record<string, HistoryEntry[]> = {};
+        for (const update of updates) (grouped[update.item_id] ||= []).push(update);
+        setItemHistory(grouped);
+        setHistoryError(false);
+      })
+      .catch(() => { if (active) setHistoryError(true); });
+    return () => { active = false; };
+  }, [project.id, items]);
+
+  const activeNodes = nodes.filter((node) => !node.archived);
+  const activeIds = new Set(activeNodes.map((node) => node.id));
+  const childrenByParent = new Map<string | null, Node[]>();
+  for (const node of activeNodes) {
+    const parent = node.parent_id && activeIds.has(node.parent_id) ? node.parent_id : null;
+    const children = childrenByParent.get(parent) || [];
+    children.push(node);
+    childrenByParent.set(parent, children);
+  }
+  for (const children of childrenByParent.values()) children.sort((a, b) => a.sort_order - b.sort_order || a.title.localeCompare(b.title, "pt-BR"));
+
+  const itemsByNode = new Map<string, Item[]>();
+  for (const item of items) {
+    if (!item.node_id || !activeIds.has(item.node_id)) continue;
+    const group = itemsByNode.get(item.node_id) || [];
+    group.push(item);
+    itemsByNode.set(item.node_id, group);
+  }
+  const unclassified = items.filter((item) => !item.node_id || !activeIds.has(item.node_id));
+  const roots = childrenByParent.get(null) || [];
+  const countUnder = (id: string): number => (itemsByNode.get(id)?.length || 0) + (childrenByParent.get(id) || []).reduce((total, child) => total + countUnder(child.id), 0);
+  const openCount = items.filter((item) => item.status !== "concluido" && item.status !== "informativo").length;
+  const attentionCount = items.filter((item) => item.attention || item.status === "bloqueado").length;
+  const overdueCount = items.filter(isOverdue).length;
+  const emptyLeafCount = activeNodes.filter((node) => !(childrenByParent.get(node.id)?.length) && !(itemsByNode.get(node.id)?.length)).length;
+
+  const topic = (item: Item) => {
+    const allUpdates = itemHistory[item.id] || [];
+    const previous = allUpdates.slice(1);
+    const latest = item.latest_update?.trim();
+    const summary = item.summary?.trim();
+    const details = [
+      item.location && `Local: ${item.location}`,
+      item.discipline && `Disciplina: ${item.discipline}`,
+      item.responsible && `Responsável: ${item.responsible}`,
+      item.supplier && `Fornecedor: ${item.supplier}`,
+      item.due_date && `Prazo: ${date(item.due_date)}`,
+    ].filter(Boolean);
+    return <article className="live-topic" key={item.id}>
+      <div className="live-topic-heading"><h4>{item.title}</h4><Status item={item} />{Boolean(item.attention) && <span className="live-attention">Ponto de atenção</span>}</div>
+      <p className="live-topic-summary">{summary || latest || "Ainda sem resumo do assunto."}</p>
+      {details.length > 0 && <p className="live-topic-details">{details.join(" · ")}</p>}
+      <div className="live-topic-update"><strong>Última atualização · {dateTime(item.latest_update_at || item.updated_at)}</strong>{latest && latest !== summary && <p>{latest}</p>}{allUpdates[0]?.evidence && allUpdates[0].evidence !== latest && allUpdates[0].evidence !== summary && <blockquote>“{allUpdates[0].evidence}”</blockquote>}<small>{item.source_title ? `Fonte: ${item.source_title}` : "Registro manual"} · {item.update_count || 0} registro(s)</small></div>
+      {previous.length > 0 && <div className="live-topic-history"><strong>Histórico de atualizações</strong>{previous.map((update) => <div className="live-history-entry" key={update.id}><p><time>{dateTime(update.created_at)}</time> · {update.summary}</p>{update.evidence && update.evidence !== update.summary && <blockquote>“{update.evidence}”</blockquote>}{update.source_title && <small>Fonte: {update.source_title}</small>}</div>)}</div>}
+      <button className="live-topic-action" onClick={() => void onOpen(item)}>Abrir histórico completo e atualizar →</button>
+    </article>;
+  };
+
+  const renderNode = (node: Node, depth: number, sectionNumber?: number): ReactNode => {
+    const direct = itemsByNode.get(node.id) || [];
+    const children = childrenByParent.get(node.id) || [];
+    const total = countUnder(node.id);
+    const title = depth === 0 ? <h2>{node.title}</h2> : depth === 1 ? <h3>{node.title}</h3> : <h4>{node.title}</h4>;
+    return <section className={`live-node live-depth-${Math.min(depth, 2)}`} id={`topico-${node.id}`} key={node.id}>
+      <div className="live-node-heading">{depth === 0 && <span className="live-section-number">{String(sectionNumber || 1).padStart(2, "0")}</span>}<div>{title}{depth === 0 && <small>{total} assunto(s) com informação</small>}</div></div>
+      {direct.map(topic)}
+      {!direct.length && !children.length && <p className="live-empty-topic">Sem informação registrada neste tópico.</p>}
+      {children.map((child) => renderNode(child, depth + 1))}
+    </section>;
+  };
+
+  return <div className="living-report">
+    <header className="living-header"><div><div className="eyebrow">ATA VIVA · LEITURA COMPLETA</div><h1>{project.name}</h1><p>{project.description || "Acompanhe todos os tópicos do projeto, as pendências e o que mudou em cada assunto."}</p><small>Sincronizado em {dateTime(syncedAt)} · Atualização automática a cada minuto</small></div><div className="living-header-actions"><button className="button secondary" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await onRefresh(); } finally { setRefreshing(false); } }}>{refreshing ? "Atualizando..." : "↻ Atualizar agora"}</button><button className="button secondary" onClick={() => window.print()}>Imprimir / PDF ↗</button></div></header>
+    <div className="living-summary"><span><strong>{items.length}</strong> assuntos registrados</span><span><strong>{openCount}</strong> em acompanhamento</span><span className={overdueCount ? "urgent" : ""}><strong>{overdueCount}</strong> atrasados</span><span className={attentionCount ? "urgent" : ""}><strong>{attentionCount}</strong> pontos de atenção</span><span><strong>{emptyLeafCount}</strong> tópicos sem registro</span></div>
+    {historyError && <p className="report-history-error">O histórico anterior não carregou. Atualize a página para tentar novamente.</p>}
+    <div className="living-layout"><nav className="living-contents" aria-label="Sumário do relatório"><strong>NESTA PÁGINA</strong>{roots.map((root, index) => <div className="living-contents-group" key={root.id}><a href={`#topico-${root.id}`}><span>{String(index + 1).padStart(2, "0")}</span>{root.title}<small>{countUnder(root.id)}</small></a>{(childrenByParent.get(root.id) || []).map((child) => <a className="living-contents-child" href={`#topico-${child.id}`} key={child.id}>{child.title}</a>)}</div>)}{unclassified.length > 0 && <a href="#topico-sem-categoria">Sem categoria <small>{unclassified.length}</small></a>}</nav>
+      <article className="living-document" aria-label="Relatório completo do projeto">{roots.map((root, index) => renderNode(root, 0, index + 1))}{unclassified.length > 0 && <section className="live-node live-depth-0" id="topico-sem-categoria"><div className="live-node-heading"><div><h2>Sem categoria ativa</h2><small>{unclassified.length} assunto(s) para organizar</small></div></div>{unclassified.map(topic)}</section>}{!roots.length && !unclassified.length && <div className="living-start"><h2>O relatório ainda não tem tópicos</h2><p>Crie uma estrutura ou registre a primeira informação para começar.</p><button className="button primary" onClick={onCompose}>Escrever atualização</button></div>}<footer className="living-footer">Fim do relatório · {items.length} assunto(s) · Sincronizado em {dateTime(syncedAt)}</footer></article>
+    </div>
+  </div>;
+}
 
 function ItemsView({ items, nodes, onOpen, onManual }: { items: Item[]; nodes: Node[]; onOpen: (item: Item) => void; onManual: () => void }) {
   const [search, setSearch] = useState(""); const [status, setStatus] = useState(""); const [node, setNode] = useState("");
@@ -254,18 +361,18 @@ function PeopleView({ members, invitations, projectId, owner, onRefresh, setErro
 
 function ReportsView({ items, nodes, project }: { items: Item[]; nodes: Node[]; project: Project }) {
   const [kind, setKind] = useState("general"); const [filter, setFilter] = useState("");
-  const [recentHistory, setRecentHistory] = useState<Record<string, RecentHistory[]>>({});
+  const [itemHistory, setItemHistory] = useState<Record<string, HistoryEntry[]>>({});
   const [historyError, setHistoryError] = useState(false);
   useEffect(() => {
     let active = true;
-    setRecentHistory({});
+    setItemHistory({});
     setHistoryError(false);
-    api<{ updates: RecentHistory[] }>(`/api/projects/${project.id}/recent-history`)
+    api<{ updates: HistoryEntry[] }>(`/api/projects/${project.id}/history`)
       .then(({ updates }) => {
         if (!active) return;
-        const grouped: Record<string, RecentHistory[]> = {};
+        const grouped: Record<string, HistoryEntry[]> = {};
         for (const update of updates) (grouped[update.item_id] ||= []).push(update);
-        setRecentHistory(grouped);
+        setItemHistory(grouped);
       })
       .catch(() => { if (active) setHistoryError(true); });
     return () => { active = false; };
@@ -273,7 +380,7 @@ function ReportsView({ items, nodes, project }: { items: Item[]; nodes: Node[]; 
   const list = filter ? items.filter((item) => item.node_id === filter) : items;
   const byResponsible = list.reduce<Record<string, Item[]>>((groups, item) => { const key = item.responsible || "Não atribuído"; (groups[key] ||= []).push(item); return groups; }, {});
   const byPartner = list.reduce<Record<string, Item[]>>((groups, item) => { const key = item.supplier || "Não identificado"; (groups[key] ||= []).push(item); return groups; }, {});
-  return <><div className="page-heading"><div><div className="eyebrow">SAÍDAS DO PROJETO</div><h1>Relatórios e matrizes</h1><p>Visões geradas a partir dos assuntos e suas fontes registradas.</p></div><button className="button secondary" onClick={() => window.print()}>Imprimir / salvar PDF ↗</button></div><div className="report-controls"><label>Tipo de relatório<select value={kind} onChange={(event) => setKind(event.target.value)}><option value="general">Acompanhamento geral</option><option value="responsibility">Matriz de responsabilidades</option><option value="communication">Matriz de comunicação</option><option value="subject">Relatório por assunto</option></select></label><label>Categoria<select value={filter} onChange={(event) => setFilter(event.target.value)}><option value="">Todas as categorias</option>{nodes.filter((node) => !node.archived).map((node) => <option value={node.id} key={node.id}>{node.title}</option>)}</select></label></div><article className="panel report"><div className="report-title"><span>RELATÓRIO DO PROJETO</span><h2>{project.name}</h2><p>Gerado em {new Date().toLocaleString("pt-BR")} · {list.length} assunto(s)</p></div>{historyError && <p className="report-history-error">Não foi possível carregar o histórico anterior; tente atualizar a página.</p>}{kind === "general" && <><div className="report-summary"><span><strong>{list.filter((item) => item.status !== "concluido").length}</strong> em acompanhamento</span><span><strong>{list.filter(isOverdue).length}</strong> atrasados</span><span><strong>{list.filter((item) => item.attention).length}</strong> pontos de atenção</span></div>{list.map((item) => <div className="report-entry" key={item.id}><div><h3>{item.title}</h3><Status item={item} /></div><p>{item.summary || "Sem resumo"}</p><small>{[item.location, item.discipline, item.supplier && `Fornecedor: ${item.supplier}`, item.responsible && `Responsável: ${item.responsible}`, item.due_date && `Prazo: ${date(item.due_date)}`].filter(Boolean).join(" · ")}</small><small>Última atualização em {date(item.latest_update_at || item.updated_at)}: {item.latest_update || item.summary || "Sem resumo"}</small><small>{item.update_count || 0} registro(s) no histórico · Fonte mais recente: {item.source_title || "Registro manual"}</small>{(recentHistory[item.id] || []).length > 0 && <div className="report-history"><strong>Atualizações anteriores</strong>{recentHistory[item.id].map((update, index) => <p key={`${update.created_at}-${index}`}><time>{date(update.created_at)}</time> · {update.summary}{update.source_title && <span> · Fonte: {update.source_title}</span>}</p>)}</div>}</div>)}</>}{kind === "responsibility" && Object.entries(byResponsible).map(([responsible, group]) => <div className="report-group" key={responsible}><h3>{responsible}</h3><ReportTable items={group || []} /></div>)}{kind === "communication" && <><p className="report-note">Esta matriz reúne interlocutores citados nas fontes. Canal e frequência de contato devem ser definidos pelo grupo.</p>{Object.entries(byPartner).map(([partner, group]) => <div className="report-group" key={partner}><h3>{partner}</h3><table><thead><tr><th>Assunto</th><th>Responsável</th><th>Situação</th><th>Última atualização</th></tr></thead><tbody>{(group || []).map((item) => <tr key={item.id}><td>{item.title}</td><td>{item.responsible || "A definir"}</td><td>{statusName[item.status]}</td><td>{date(item.updated_at)}</td></tr>)}</tbody></table></div>)}</>}{kind === "subject" && <ReportTable items={list} />}{!list.length && <Empty icon="▣" title="Sem dados para este relatório" text="Registre informações ou altere o filtro para gerar a visão." />}</article></>;
+  return <><div className="page-heading"><div><div className="eyebrow">SAÍDAS DO PROJETO</div><h1>Relatórios e matrizes</h1><p>Visões geradas a partir dos assuntos e suas fontes registradas.</p></div><button className="button secondary" onClick={() => window.print()}>Imprimir / salvar PDF ↗</button></div><div className="report-controls"><label>Tipo de relatório<select value={kind} onChange={(event) => setKind(event.target.value)}><option value="general">Acompanhamento geral</option><option value="responsibility">Matriz de responsabilidades</option><option value="communication">Matriz de comunicação</option><option value="subject">Relatório por assunto</option></select></label><label>Categoria<select value={filter} onChange={(event) => setFilter(event.target.value)}><option value="">Todas as categorias</option>{nodes.filter((node) => !node.archived).map((node) => <option value={node.id} key={node.id}>{node.title}</option>)}</select></label></div><article className="panel report"><div className="report-title"><span>RELATÓRIO DO PROJETO</span><h2>{project.name}</h2><p>Gerado em {new Date().toLocaleString("pt-BR")} · {list.length} assunto(s)</p></div>{historyError && <p className="report-history-error">Não foi possível carregar o histórico anterior; tente atualizar a página.</p>}{kind === "general" && <><div className="report-summary"><span><strong>{list.filter((item) => item.status !== "concluido").length}</strong> em acompanhamento</span><span><strong>{list.filter(isOverdue).length}</strong> atrasados</span><span><strong>{list.filter((item) => item.attention).length}</strong> pontos de atenção</span></div>{list.map((item) => <div className="report-entry" key={item.id}><div><h3>{item.title}</h3><Status item={item} /></div><p>{item.summary || "Sem resumo"}</p><small>{[item.location, item.discipline, item.supplier && `Fornecedor: ${item.supplier}`, item.responsible && `Responsável: ${item.responsible}`, item.due_date && `Prazo: ${date(item.due_date)}`].filter(Boolean).join(" · ")}</small><small>Última atualização em {date(item.latest_update_at || item.updated_at)}: {item.latest_update || item.summary || "Sem resumo"}</small><small>{item.update_count || 0} registro(s) no histórico · Fonte mais recente: {item.source_title || "Registro manual"}</small>{(itemHistory[item.id] || []).length > 1 && <div className="report-history"><strong>Atualizações anteriores</strong>{itemHistory[item.id].slice(1, 3).map((update, index) => <p key={`${update.created_at}-${index}`}><time>{date(update.created_at)}</time> · {update.summary}{update.source_title && <span> · Fonte: {update.source_title}</span>}</p>)}</div>}</div>)}</>}{kind === "responsibility" && Object.entries(byResponsible).map(([responsible, group]) => <div className="report-group" key={responsible}><h3>{responsible}</h3><ReportTable items={group || []} /></div>)}{kind === "communication" && <><p className="report-note">Esta matriz reúne interlocutores citados nas fontes. Canal e frequência de contato devem ser definidos pelo grupo.</p>{Object.entries(byPartner).map(([partner, group]) => <div className="report-group" key={partner}><h3>{partner}</h3><table><thead><tr><th>Assunto</th><th>Responsável</th><th>Situação</th><th>Última atualização</th></tr></thead><tbody>{(group || []).map((item) => <tr key={item.id}><td>{item.title}</td><td>{item.responsible || "A definir"}</td><td>{statusName[item.status]}</td><td>{date(item.updated_at)}</td></tr>)}</tbody></table></div>)}</>}{kind === "subject" && <ReportTable items={list} />}{!list.length && <Empty icon="▣" title="Sem dados para este relatório" text="Registre informações ou altere o filtro para gerar a visão." />}</article></>;
 }
 
 function ReportTable({ items }: { items: Item[] }) { return <table><thead><tr><th>Assunto</th><th>Estado</th><th>Prazo</th><th>Última atualização</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td>{item.title}</td><td>{statusName[item.status]}</td><td>{date(item.due_date)}</td><td>{date(item.latest_update_at || item.updated_at)} · {item.latest_update || item.summary || "Sem resumo"}</td></tr>)}</tbody></table>; }

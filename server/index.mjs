@@ -107,25 +107,28 @@ app.get('/api/state', requireUser, run(async (req, res) => {
   const [[nodes], [sources], [items], [members], [invitations]] = await Promise.all([
     db().execute('SELECT id,parent_id,title,sort_order,archived,created_at FROM structure_nodes WHERE project_id=? ORDER BY sort_order,title', [projectId]),
     db().execute('SELECT s.id,s.title,s.kind,s.body,s.file_name,s.content_type,s.analysis_status,s.analysis_error,s.created_at,u.email AS author_email FROM sources s LEFT JOIN users u ON u.id=s.author_id WHERE s.project_id=? ORDER BY s.created_at DESC LIMIT 200', [projectId]),
-    db().execute('SELECT i.*,s.title AS source_title FROM items i LEFT JOIN sources s ON s.id=i.latest_source_id WHERE i.project_id=? ORDER BY i.updated_at DESC LIMIT 500', [projectId]),
+    db().execute('SELECT i.*,s.title AS source_title FROM items i LEFT JOIN sources s ON s.id=i.latest_source_id WHERE i.project_id=? ORDER BY i.updated_at DESC', [projectId]),
     db().execute('SELECT u.id,u.email,m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.project_id=? ORDER BY m.role,u.email', [projectId]),
     db().execute('SELECT id,email,role,expires_at,accepted_at,created_at FROM invitations WHERE project_id=? ORDER BY created_at DESC LIMIT 100', [projectId]),
   ]);
   if (items.length) {
     const ids = items.map((item) => item.id);
-    const placeholders = ids.map(() => '?').join(',');
-    const [history] = await db().execute(`SELECT u.item_id,u.summary,u.created_at,a.email AS author_email
-      FROM item_updates u LEFT JOIN users a ON a.id=u.author_id
-      WHERE u.item_id IN (${placeholders}) ORDER BY u.item_id,u.created_at DESC,u.id DESC`, ids);
     const itemById = new Map(items.map((item) => [item.id, item]));
-    for (const update of history) {
-      const item = itemById.get(update.item_id);
-      if (!item) continue;
-      item.update_count = (item.update_count || 0) + 1;
-      if (item.update_count === 1) {
-        item.latest_update = update.summary;
-        item.latest_update_at = update.created_at;
-        item.latest_update_author = update.author_email;
+    for (let start = 0; start < ids.length; start += 400) {
+      const batch = ids.slice(start, start + 400);
+      const placeholders = batch.map(() => '?').join(',');
+      const [history] = await db().execute(`SELECT u.item_id,u.summary,u.created_at,a.email AS author_email
+        FROM item_updates u LEFT JOIN users a ON a.id=u.author_id
+        WHERE u.item_id IN (${placeholders}) ORDER BY u.item_id,u.created_at DESC,u.id DESC`, batch);
+      for (const update of history) {
+        const item = itemById.get(update.item_id);
+        if (!item) continue;
+        item.update_count = (item.update_count || 0) + 1;
+        if (item.update_count === 1) {
+          item.latest_update = update.summary;
+          item.latest_update_at = update.created_at;
+          item.latest_update_author = update.author_email;
+        }
       }
     }
   }
@@ -366,18 +369,13 @@ app.get('/api/projects/:projectId/items/:itemId/updates', requireUser, membershi
   res.json({ updates });
 }));
 
-app.get('/api/projects/:projectId/recent-history', requireUser, membership, run(async (req, res) => {
-  const [rows] = await db().execute(`SELECT u.item_id,u.summary,u.created_at,s.title AS source_title
+app.get('/api/projects/:projectId/history', requireUser, membership, run(async (req, res) => {
+  const [updates] = await db().execute(`SELECT u.id,u.item_id,u.summary,u.evidence,u.created_at,
+      s.title AS source_title,a.email AS author_email
     FROM item_updates u JOIN items i ON i.id=u.item_id
     LEFT JOIN sources s ON s.id=u.source_id
+    LEFT JOIN users a ON a.id=u.author_id
     WHERE i.project_id=? ORDER BY u.item_id,u.created_at DESC,u.id DESC`, [req.params.projectId]);
-  const positions = new Map();
-  const updates = [];
-  for (const row of rows) {
-    const position = (positions.get(row.item_id) || 0) + 1;
-    positions.set(row.item_id, position);
-    if (position === 2 || position === 3) updates.push(row);
-  }
   res.json({ updates });
 }));
 

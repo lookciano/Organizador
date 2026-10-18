@@ -7,6 +7,8 @@ Aplicação web para reunir informações de projetos, acompanhar assuntos e ger
 ## O que o MVP faz
 
 - Cria projetos com estrutura inicial ou em branco.
+- Abre diretamente no relatório vivo do projeto: uma página contínua com todas as seções e subtópicos da estrutura, inclusive os ainda sem registro. Cada assunto mostra situação, contexto, última atualização e histórico completo; o sumário serve apenas para navegar pela página.
+- Atualiza o relatório automaticamente a cada minuto enquanto a página está visível, com opção de atualizar na hora e imprimir ou salvar em PDF.
 - Permite adicionar, renomear e arquivar categorias sem apagar assuntos já registrados.
 - Recebe mensagens, transcrições, PDF, DOCX, TXT, Markdown e imagens PNG/JPEG/WebP de até 5 MB em uma conversa do projeto. Basta escrever ou anexar e enviar; o título é criado automaticamente.
 - Usa a API do OpenRouter para extrair assuntos, prazos, responsáveis, fornecedores e evidências, ligando atualizações aos assuntos já conhecidos quando houver correspondência clara. A API da OpenAI continua disponível como alternativa.
