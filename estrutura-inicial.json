@@ -1,0 +1,336 @@
+{
+  "versao": 1,
+  "nome": "Modelo inicial Grande Sertão",
+  "descricao": "Estrutura de referência extraída dos títulos e subtítulos do relatório consolidado; cada nó poderá ser renomeado, movido, criado ou arquivado por projeto.",
+  "secoes": [
+    {
+      "id": "n001",
+      "titulo": "Equipamentos",
+      "filhos": [
+        {
+          "id": "n002",
+          "titulo": "Reatores",
+          "filhos": []
+        },
+        {
+          "id": "n003",
+          "titulo": "Compensador Síncrono",
+          "filhos": []
+        },
+        {
+          "id": "n004",
+          "titulo": "Disjuntores",
+          "filhos": []
+        },
+        {
+          "id": "n005",
+          "titulo": "TP e TCs",
+          "filhos": []
+        },
+        {
+          "id": "n006",
+          "titulo": "TC de Neutro (TCN)",
+          "filhos": []
+        },
+        {
+          "id": "n007",
+          "titulo": "Chaves Seccionadoras",
+          "filhos": []
+        },
+        {
+          "id": "n008",
+          "titulo": "Chaves de By-Pass",
+          "filhos": []
+        },
+        {
+          "id": "n009",
+          "titulo": "Bobinas de Bloqueio",
+          "filhos": []
+        },
+        {
+          "id": "n010",
+          "titulo": "Reator de Neutro",
+          "filhos": []
+        },
+        {
+          "id": "n011",
+          "titulo": "Para-raios e Para-raios de Neutro",
+          "filhos": []
+        },
+        {
+          "id": "n012",
+          "titulo": "Pórticos",
+          "filhos": []
+        },
+        {
+          "id": "n013",
+          "titulo": "Painéis QDCA e QDCC",
+          "filhos": []
+        },
+        {
+          "id": "n014",
+          "titulo": "Cubículos",
+          "filhos": [
+            {
+              "id": "n015",
+              "titulo": "Ourolândia",
+              "filhos": []
+            },
+            {
+              "id": "n016",
+              "titulo": "Ceará-Mirim",
+              "filhos": []
+            },
+            {
+              "id": "n017",
+              "titulo": "Pau Ferro",
+              "filhos": []
+            },
+            {
+              "id": "n018",
+              "titulo": "Garanhuns",
+              "filhos": []
+            }
+          ]
+        },
+        {
+          "id": "n019",
+          "titulo": "Banco de Bateria",
+          "filhos": []
+        },
+        {
+          "id": "n020",
+          "titulo": "GMG",
+          "filhos": [
+            {
+              "id": "n021",
+              "titulo": "Startup dos GMGs",
+              "filhos": []
+            },
+            {
+              "id": "n022",
+              "titulo": "GMG — Geraforte (Jussiape e SJP)",
+              "filhos": []
+            }
+          ]
+        },
+        {
+          "id": "n023",
+          "titulo": "Caixa de Junção (CJX) / Caixa de Cabos",
+          "filhos": []
+        },
+        {
+          "id": "n024",
+          "titulo": "Transformador de Serviço Auxiliar (TSA)",
+          "filhos": []
+        },
+        {
+          "id": "n025",
+          "titulo": "Painel de Rede Corporativa",
+          "filhos": []
+        }
+      ]
+    },
+    {
+      "id": "n026",
+      "titulo": "Startup e Comissionamento",
+      "filhos": [
+        {
+          "id": "n027",
+          "titulo": "Startup das Subestações",
+          "filhos": []
+        },
+        {
+          "id": "n028",
+          "titulo": "Jussiape — Acesso GST/TAESA",
+          "filhos": []
+        },
+        {
+          "id": "n029",
+          "titulo": "TAFs — Testes de Aceitação em Fábrica",
+          "filhos": []
+        }
+      ]
+    },
+    {
+      "id": "n030",
+      "titulo": "Estudos, SPCS e Proteção — por subestação",
+      "filhos": [
+        {
+          "id": "n031",
+          "titulo": "Ceará-Mirim (Axia)",
+          "filhos": []
+        },
+        {
+          "id": "n032",
+          "titulo": "Ourolândia (Argo)",
+          "filhos": []
+        },
+        {
+          "id": "n033",
+          "titulo": "Jussiape (GST)",
+          "filhos": []
+        },
+        {
+          "id": "n034",
+          "titulo": "Jussiape (TAESA)",
+          "filhos": []
+        },
+        {
+          "id": "n035",
+          "titulo": "Ibicoara (TAESA)",
+          "filhos": []
+        },
+        {
+          "id": "n036",
+          "titulo": "Igaporã (TAESA)",
+          "filhos": []
+        },
+        {
+          "id": "n037",
+          "titulo": "João Pessoa",
+          "filhos": []
+        },
+        {
+          "id": "n038",
+          "titulo": "Pau Ferro",
+          "filhos": []
+        }
+      ]
+    },
+    {
+      "id": "n039",
+      "titulo": "Sistemas",
+      "filhos": [
+        {
+          "id": "n040",
+          "titulo": "CFTV — TAESA",
+          "filhos": []
+        },
+        {
+          "id": "n041",
+          "titulo": "CFTV — Grande Sertão",
+          "filhos": []
+        },
+        {
+          "id": "n042",
+          "titulo": "SPCS",
+          "filhos": []
+        }
+      ]
+    },
+    {
+      "id": "n043",
+      "titulo": "Cabos de Força e Controle / Instrumentação",
+      "filhos": [
+        {
+          "id": "n044",
+          "titulo": "Cabos de Força e Controle",
+          "filhos": []
+        },
+        {
+          "id": "n045",
+          "titulo": "Cabos de Instrumentação",
+          "filhos": []
+        }
+      ]
+    },
+    {
+      "id": "n046",
+      "titulo": "Projetos Construtivos — por disciplina e subestação",
+      "filhos": [
+        {
+          "id": "n047",
+          "titulo": "Ceará-Mirim II",
+          "filhos": []
+        },
+        {
+          "id": "n048",
+          "titulo": "João Pessoa II",
+          "filhos": []
+        },
+        {
+          "id": "n049",
+          "titulo": "Pau Ferro",
+          "filhos": []
+        },
+        {
+          "id": "n050",
+          "titulo": "Messias",
+          "filhos": []
+        },
+        {
+          "id": "n051",
+          "titulo": "Garanhuns",
+          "filhos": []
+        },
+        {
+          "id": "n052",
+          "titulo": "Pilões III",
+          "filhos": []
+        },
+        {
+          "id": "n053",
+          "titulo": "Jussiape",
+          "filhos": []
+        },
+        {
+          "id": "n054",
+          "titulo": "São João do Paraíso",
+          "filhos": []
+        },
+        {
+          "id": "n055",
+          "titulo": "Capelinha",
+          "filhos": []
+        },
+        {
+          "id": "n056",
+          "titulo": "Itabira",
+          "filhos": []
+        },
+        {
+          "id": "n057",
+          "titulo": "Igaporã",
+          "filhos": []
+        },
+        {
+          "id": "n058",
+          "titulo": "Ibicoara",
+          "filhos": []
+        },
+        {
+          "id": "n059",
+          "titulo": "Ourolândia",
+          "filhos": []
+        }
+      ]
+    },
+    {
+      "id": "n060",
+      "titulo": "Regulatório",
+      "filhos": []
+    },
+    {
+      "id": "n061",
+      "titulo": "Ações Críticas e Encaminhamentos",
+      "filhos": [
+        {
+          "id": "n062",
+          "titulo": "Críticos (esta semana)",
+          "filhos": []
+        },
+        {
+          "id": "n063",
+          "titulo": "Responsáveis rápidos",
+          "filhos": []
+        },
+        {
+          "id": "n064",
+          "titulo": "Reuniões / decisões",
+          "filhos": []
+        }
+      ]
+    }
+  ]
+}
