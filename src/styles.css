@@ -15,3 +15,19 @@
 .chat-composer{position:sticky;bottom:18px;z-index:5;background:white;border:1px solid #c9ddd2;border-radius:17px;box-shadow:0 12px 36px #193c2920;padding:12px 14px}.chat-composer textarea{display:block;width:100%;min-height:70px;max-height:260px;resize:vertical;border:0!important;box-shadow:none!important;color:#243f3a;background:transparent;padding:7px 5px;font-size:13px;line-height:1.5}.chat-composer textarea::placeholder{color:#91a29a}.composer-actions{display:flex;align-items:center;gap:11px;margin-top:5px}.composer-actions>span{color:#879b91;font-size:10px;flex:1}.attach-button{display:grid;place-items:center;width:34px;height:34px;flex:0 0 34px;border:1px solid #cce2d6;border-radius:9px;background:#eef7f1;color:#21735b;font-size:24px;line-height:1}.attach-button:hover{background:#dceee3}.attach-button:disabled{opacity:.5}.attachment-chip{display:flex;align-items:center;gap:8px;width:max-content;max-width:100%;padding:7px 10px;border-radius:7px;background:#e7f3eb;color:#2a7056;font-size:11px;font-weight:700;overflow-wrap:anywhere}.attachment-chip button{border:0;background:none;color:#537c69;font-size:18px;line-height:1}.chat-composer .button{padding:9px 16px}
 @media(max-width:720px){.conversation-page{min-height:calc(100vh - 205px)}.conversation-heading{margin-bottom:0}.conversation-heading h1{font-size:25px}.conversation-feed{padding:15px 0 22px}.chat-composer{bottom:8px;padding:10px}.composer-actions>span{font-size:9px}.chat-bubble{padding:12px 13px}.chat-body{font-size:12px}}
 @media print{.chat-composer{display:none!important}}
+
+.item-main .item-latest,.topic-row .topic-latest{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;white-space:normal;color:#466b61;font-size:11px;line-height:1.5;margin-top:8px}
+.item-main .item-update-date,.topic-row .topic-history{display:block;color:#759388;font-size:10px;margin-top:6px;white-space:normal}
+.topic-row>div:first-child{min-width:0}
+.topic-row .topic-latest{max-width:660px}
+.latest-update-card{background:#f2f8f4;border:1px solid #d7e9dc;border-radius:11px;padding:15px 17px;margin:0 0 20px}
+.latest-update-card small{color:#498468;font-size:10px;font-weight:800;letter-spacing:.05em}
+.latest-update-card p{color:#294e40;font-size:13px;line-height:1.6;margin:8px 0}
+.latest-update-card span{color:#779488;font-size:10px}
+.chat-author{font-size:10px;color:#42695c}
+.report-history{margin-top:13px;padding:11px 13px;background:#f6faf7;border-left:3px solid #b9dcc5;border-radius:3px 8px 8px 3px}
+.report-history strong{display:block;color:#477263;font-size:10px;margin-bottom:5px}
+.report-history p{font-size:11px;line-height:1.5;margin:5px 0;color:#557568}
+.report-history time{font-weight:800}
+.report-history span{color:#859d91}
+.report-history-error{margin:0 25px 15px;color:#a65c44;font-size:11px}
