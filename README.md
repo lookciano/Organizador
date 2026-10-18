@@ -9,7 +9,7 @@ Aplicação web para reunir informações de projetos, acompanhar assuntos e ger
 - Cria projetos com estrutura inicial ou em branco.
 - Permite adicionar, renomear e arquivar categorias sem apagar assuntos já registrados.
 - Recebe texto, transcrições, PDF, DOCX, TXT, Markdown e imagens PNG/JPEG/WebP de até 5 MB.
-- Usa a API da OpenAI para extrair assuntos, prazos, responsáveis, fornecedores e evidências, ligando atualizações aos assuntos já conhecidos quando houver correspondência clara.
+- Usa a API do OpenRouter para extrair assuntos, prazos, responsáveis, fornecedores e evidências, ligando atualizações aos assuntos já conhecidos quando houver correspondência clara. A API da OpenAI continua disponível como alternativa.
 - Mantém fonte original, histórico por assunto, atualização manual e relatórios imprimíveis.
 - Convida participantes por e-mail para um projeto específico. A entrega automática usa SMTP; sem SMTP, a interface disponibiliza um link de convite para o administrador enviar manualmente.
 
@@ -18,7 +18,7 @@ Aplicação web para reunir informações de projetos, acompanhar assuntos e ger
 - Frontend: React e Vite.
 - Serviço web: Node.js e Express no Render.
 - Dados estruturados, sessões e arquivos pequenos: TiDB Cloud via `mysql2` com TLS verificado.
-- Análise multimodal: Responses API da OpenAI. O texto das fontes é tratado como dado, não como instrução.
+- Análise multimodal: Responses API do OpenRouter (ou da OpenAI como alternativa). O texto das fontes é tratado como dado, não como instrução.
 - Acesso: login por e-mail e senha, sessões `HttpOnly`, participação por projeto e convites com token de uso único que expiram em 7 dias.
 
 ## Configuração
@@ -26,7 +26,7 @@ Aplicação web para reunir informações de projetos, acompanhar assuntos e ger
 1. Crie uma instância TiDB Cloud e copie a URL MySQL da conexão TLS para `DATABASE_URL`.
    Se a URL apontar para um banco de sistema como `sys`, a aplicação criará e usará automaticamente o banco `organizador`.
 2. No Render, conecte este repositório como **Web Service**. O arquivo `render.yaml` contém build, start e variáveis necessárias.
-3. Configure as variáveis sensíveis no painel do Render: `DATABASE_URL`, `BOOTSTRAP_EMAIL`, `BOOTSTRAP_PASSWORD`, `OPENAI_API_KEY`, `APP_ORIGIN`, `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD` e `SMTP_FROM`. `BOOTSTRAP_PASSWORD` deve ter pelo menos 12 caracteres. `APP_ORIGIN` deve ser a URL HTTPS do serviço, sem barra final.
+3. Configure no painel do Render `DATABASE_URL`, `BOOTSTRAP_EMAIL`, `BOOTSTRAP_PASSWORD`, `APP_ORIGIN` e `OPENROUTER_API_KEY`. Crie a chave em [OpenRouter Keys](https://openrouter.ai/keys) e salve-a apenas no Render. `OPENROUTER_MODEL` define o modelo; o padrão é `openai/gpt-4.1-mini`. Se preferir usar a OpenAI diretamente, configure `OPENAI_API_KEY` no lugar da chave OpenRouter. Quando as duas estiverem presentes, o OpenRouter tem prioridade. `BOOTSTRAP_PASSWORD` deve ter pelo menos 12 caracteres. `APP_ORIGIN` deve ser a URL HTTPS do serviço, sem barra final. As variáveis `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD` e `SMTP_FROM` são necessárias apenas para enviar convites automaticamente por e-mail.
 4. O serviço cria as tabelas e a primeira conta no início. Entre com `BOOTSTRAP_EMAIL` e `BOOTSTRAP_PASSWORD`, crie o projeto e escolha o modelo Grande Sertão.
 5. Convide colaboradores pela área **Pessoas**. Eles poderão criar a própria senha pelo link recebido.
 
@@ -46,4 +46,4 @@ O servidor escuta `0.0.0.0:${PORT}` e oferece `/health` para verificação. Para
 
 ## Limites desta primeira versão
 
-Os arquivos são armazenados no TiDB Cloud junto aos dados do projeto, com limite de 5 MB por envio. A matriz de comunicação mostra interlocutores e assuntos citados; canal e frequência devem ser definidos pelo grupo. A análise automática requer `OPENAI_API_KEY`; informações continuam sendo registradas e podem ser reprocessadas depois de configurar a chave.
+Os arquivos são armazenados no TiDB Cloud junto aos dados do projeto, com limite de 5 MB por envio. A matriz de comunicação mostra interlocutores e assuntos citados; canal e frequência devem ser definidos pelo grupo. A análise automática requer `OPENROUTER_API_KEY` ou `OPENAI_API_KEY`; informações continuam sendo registradas e podem ser reprocessadas depois de configurar uma das chaves. O modelo escolhido deve aceitar os tipos de arquivo enviados e respostas estruturadas.

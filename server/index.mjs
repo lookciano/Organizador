@@ -249,7 +249,7 @@ async function processSource(sourceId, projectId) {
     finally { connection.release(); }
     return { extractedCount: extracted.length, status: 'completed' };
   } catch (error) {
-    const status = !process.env.OPENAI_API_KEY ? 'needs_key' : 'failed';
+    const status = !process.env.OPENROUTER_API_KEY && !process.env.OPENAI_API_KEY ? 'needs_key' : 'failed';
     await db().execute('UPDATE sources SET analysis_status=?,analysis_error=? WHERE id=?', [status, error.message.slice(0, 1000), sourceId]);
     return { extractedCount: 0, status, error: error.message };
   }
