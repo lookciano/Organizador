@@ -109,15 +109,18 @@ app.get('/api/state', requireUser, run(async (req, res) => {
     db().execute('SELECT s.id,s.title,s.kind,s.body,s.file_name,s.content_type,s.analysis_status,s.analysis_error,s.created_at,u.email AS author_email FROM sources s LEFT JOIN users u ON u.id=s.author_id WHERE s.project_id=? ORDER BY s.created_at DESC LIMIT 200', [projectId]),
     db().execute(`SELECT i.*,s.title AS source_title,
       latest.summary AS latest_update,latest.created_at AS latest_update_at,
-      author.email AS latest_update_author,
-      (SELECT COUNT(*) FROM item_updates history WHERE history.item_id=i.id) AS update_count
+      author.email AS latest_update_author,COALESCE(latest.update_count,0) AS update_count
       FROM items i
       LEFT JOIN sources s ON s.id=i.latest_source_id
-      LEFT JOIN item_updates latest ON latest.id=(
-        SELECT update_row.id FROM item_updates update_row WHERE update_row.item_id=i.id
-        ORDER BY update_row.created_at DESC,update_row.id DESC LIMIT 1)
+      LEFT JOIN (
+        SELECT u.item_id,u.summary,u.created_at,u.author_id,
+          COUNT(*) OVER (PARTITION BY u.item_id) AS update_count,
+          ROW_NUMBER() OVER (PARTITION BY u.item_id ORDER BY u.created_at DESC,u.id DESC) AS history_rank
+        FROM item_updates u JOIN items scoped ON scoped.id=u.item_id
+        WHERE scoped.project_id=?
+      ) latest ON latest.item_id=i.id AND latest.history_rank=1
       LEFT JOIN users author ON author.id=latest.author_id
-      WHERE i.project_id=? ORDER BY i.updated_at DESC LIMIT 500`, [projectId]),
+      WHERE i.project_id=? ORDER BY i.updated_at DESC LIMIT 500`, [projectId, projectId]),
     db().execute('SELECT u.id,u.email,m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.project_id=? ORDER BY m.role,u.email', [projectId]),
     db().execute('SELECT id,email,role,expires_at,accepted_at,created_at FROM invitations WHERE project_id=? ORDER BY created_at DESC LIMIT 100', [projectId]),
   ]);
