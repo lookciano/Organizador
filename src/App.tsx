@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 
 type User = { id: string; email: string };
 type Project = { id: string; name: string; description: string; role: string; created_at: string };
@@ -25,7 +25,7 @@ const statusName: Record<string, string> = { pendente: "Pendente", em_andamento:
 const views: { id: View; label: string; icon: string }[] = [
   { id: "overview", label: "Visão geral", icon: "◫" },
   { id: "items", label: "Assuntos", icon: "▤" },
-  { id: "sources", label: "Fontes", icon: "▧" },
+  { id: "sources", label: "Conversa", icon: "▧" },
   { id: "structure", label: "Estrutura", icon: "⌘" },
   { id: "people", label: "Pessoas", icon: "♙" },
   { id: "reports", label: "Relatórios", icon: "▣" },
@@ -43,12 +43,12 @@ export default function App() {
   const inviteToken = new URLSearchParams(window.location.search).get("convite");
   const [state, setState] = useState<State | null>(null);
   const [projectId, setProjectId] = useState(localStorage.getItem("organizador_project") || "");
-  const [view, setView] = useState<View>("overview");
+  const [view, setView] = useState<View>("sources");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [showSource, setShowSource] = useState(false);
+  const [composerFocus, setComposerFocus] = useState(0);
   const [showManual, setShowManual] = useState(false);
   const [selectedItem, setSelectedItem] = useState<Item | null>(null);
   const [updates, setUpdates] = useState<Update[]>([]);
@@ -79,7 +79,7 @@ export default function App() {
 
   useEffect(() => { if (!inviteToken) void refresh(); else setLoading(false); }, [refresh, inviteToken]);
 
-  const chooseProject = (id: string) => { setProjectId(id); localStorage.setItem("organizador_project", id); setView("overview"); void refresh(id); };
+  const chooseProject = (id: string) => { setProjectId(id); localStorage.setItem("organizador_project", id); setView("sources"); void refresh(id); };
   const after = async (message = "Alterações salvas") => { await refresh(); setNotice(message); setTimeout(() => setNotice(""), 5000); };
   const openItem = async (item: Item) => {
     setSelectedItem(item);
@@ -112,19 +112,18 @@ export default function App() {
     </aside>
 
     <main className="main">
-      <header className="topbar"><div className="breadcrumb">Projetos <span>/</span> {project?.name || "Novo projeto"}</div><div className="top-actions"><span className="privacy-pill">● Acesso restrito</span>{project && <button className="button primary" onClick={() => setShowSource(true)}>＋ Nova informação</button>}</div></header>
+      <header className="topbar"><div className="breadcrumb">Projetos <span>/</span> {project?.name || "Novo projeto"}</div><div className="top-actions"><span className="privacy-pill">● Acesso restrito</span>{project && view !== "sources" && <button className="button primary" onClick={() => { setView("sources"); setComposerFocus((value) => value + 1); }}>＋ Escrever atualização</button>}</div></header>
       {error && <div className="alert error" role="alert">{error}<button onClick={() => setError("")}>×</button></div>}
       {notice && <div className="alert success" role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
       {!project ? <CreateProject onCreated={(id) => chooseProject(id)} setBusy={setBusy} busy={busy} setError={setError} /> : <div className="content">
         {view === "overview" && <><div className="page-heading"><div><div className="eyebrow">PAINEL DO PROJETO</div><h1>{project.name}</h1><p>{project.description || "Acompanhe decisões, ações e atualizações com o contexto de cada fonte."}</p></div><button className="button secondary" onClick={() => setView("reports")}>Gerar relatório ↗</button></div><div className="metric-grid"><Metric label="Assuntos ativos" value={counts.open} icon="◉" tone="teal" /><Metric label="Pontos de atenção" value={counts.attention} icon="!" tone="amber" /><Metric label="Atrasados" value={counts.overdue} icon="⌚" tone="red" /><Metric label="Concluídos" value={counts.done} icon="✓" tone="green" /></div><div className="two-columns"><section className="panel"><div className="panel-head"><div><h2>Pontos de atenção</h2><p>Assuntos que precisam de acompanhamento</p></div><button className="text-button" onClick={() => setView("items")}>Ver todos →</button></div>{items.filter((item) => item.attention || isOverdue(item) || item.status === "bloqueado").slice(0, 6).map((item) => <ItemRow key={item.id} item={item} onClick={() => void openItem(item)} />)}{!counts.attention && !counts.overdue && <Empty icon="✓" title="Nenhum ponto de atenção" text="Novas informações aparecerão aqui após a análise." />}</section><section className="panel"><div className="panel-head"><div><h2>Atividade recente</h2><p>Últimas fontes adicionadas ao projeto</p></div><button className="text-button" onClick={() => setView("sources")}>Ver fontes →</button></div>{sources.slice(0, 6).map((source) => <div className="activity-row" key={source.id}><div className="activity-icon">{source.kind === "file" ? "▧" : "≡"}</div><div><strong>{source.title}</strong><small>{source.file_name || (source.kind === "manual" ? "Registro manual" : "Texto ou transcrição")} · {date(source.created_at)}</small></div><span className={`source-state ${source.analysis_status}`}>{source.analysis_status === "completed" ? "Analisado" : source.analysis_status === "needs_key" ? "IA pendente" : source.analysis_status === "failed" ? "Falhou" : "Registrado"}</span></div>)}{!sources.length && <Empty icon="▧" title="Nenhuma fonte ainda" text="Adicione uma transcrição, mensagem ou arquivo para começar." />}</section></div></>}
         {view === "items" && <ItemsView items={items} nodes={nodes} onOpen={openItem} onManual={() => setShowManual(true)} />}
-        {view === "sources" && <SourcesView sources={sources} projectId={projectId} onAdd={() => setShowSource(true)} onRefresh={after} setError={setError} />}
+        {view === "sources" && <SourcesView sources={sources} projectId={projectId} onRefresh={after} setError={setError} focusSignal={composerFocus} />}
         {view === "structure" && <StructureView nodes={nodes} projectId={projectId} owner={project.role === "owner"} onRefresh={after} setError={setError} />}
         {view === "people" && <PeopleView members={state.members || []} invitations={state.invitations || []} projectId={projectId} owner={project.role === "owner"} onRefresh={after} setError={setError} />}
         {view === "reports" && <ReportsView items={items} nodes={nodes} project={project} />}
       </div>}
     </main>
-    {showSource && project && <SourceModal projectId={projectId} busy={busy} setBusy={setBusy} close={() => setShowSource(false)} onDone={after} setError={setError} />}
     {showManual && project && <ManualModal projectId={projectId} nodes={nodes} close={() => setShowManual(false)} onDone={after} setError={setError} />}
     {selectedItem && project && <ItemDrawer item={selectedItem} updates={updates} projectId={projectId} close={() => setSelectedItem(null)} onDone={async () => { await after(); setSelectedItem(null); }} setError={setError} />}
   </div>;
@@ -156,9 +155,88 @@ function ItemsView({ items, nodes, onOpen, onManual }: { items: Item[]; nodes: N
   return <><div className="page-heading"><div><div className="eyebrow">MAPA DE CONHECIMENTO</div><h1>Assuntos</h1><p>O estado atual de cada assunto, com responsáveis, prazos e fontes.</p></div><button className="button secondary" onClick={onManual}>＋ Registro manual</button></div><div className="filters"><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar assuntos, pessoas ou fornecedores..." /><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">Todos os estados</option>{Object.entries(statusName).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select value={node} onChange={(event) => setNode(event.target.value)}><option value="">Todas as categorias</option>{nodes.filter((entry) => !entry.archived).map((entry) => <option key={entry.id} value={entry.id}>{entry.title}</option>)}</select></div><div className="panel table-panel"><div className="list-head"><span>ASSUNTO</span><span>ESTADO</span><span>ATUALIZAÇÃO</span></div>{visible.map((item) => <button className="topic-row" key={item.id} onClick={() => onOpen(item)}><div><strong>{item.title}</strong><small>{[item.location, item.discipline, item.responsible].filter(Boolean).join(" · ") || "Sem detalhes adicionais"}</small></div><Status item={item} /><span className="row-date">{date(item.updated_at)}</span></button>)}{!visible.length && <Empty icon="▤" title="Nenhum assunto encontrado" text="Ajuste os filtros ou adicione uma informação ao projeto." />}</div></>;
 }
 
-function SourcesView({ sources, projectId, onAdd, onRefresh, setError }: { sources: Source[]; projectId: string; onAdd: () => void; onRefresh: (message?: string) => Promise<void>; setError: (value: string) => void }) {
+function SourcesView({ sources, projectId, onRefresh, setError, focusSignal }: { sources: Source[]; projectId: string; onRefresh: (message?: string) => Promise<void>; setError: (value: string) => void; focusSignal: number }) {
+  const [body, setBody] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [sending, setSending] = useState(false);
   const [processing, setProcessing] = useState("");
-  return <><div className="page-heading"><div><div className="eyebrow">MEMÓRIA DO PROJETO</div><h1>Fontes</h1><p>Mensagens, transcrições e arquivos que fundamentam os assuntos.</p></div><button className="button primary" onClick={onAdd}>＋ Nova informação</button></div><div className="source-list">{sources.map((source) => <div className="panel source-card" key={source.id}><div className="source-card-top"><div className="source-icon">{source.kind === "file" ? "▧" : "≡"}</div><div><h2>{source.title}</h2><p>{date(source.created_at)} · {source.file_name || (source.kind === "manual" ? "Registro manual" : "Texto ou transcrição")}</p></div><span className={`source-state ${source.analysis_status}`}>{source.analysis_status === "completed" ? "Analisado" : source.analysis_status === "needs_key" ? "Aguardando chave de IA" : source.analysis_status === "failed" ? "Falha na análise" : "Registrado"}</span></div>{source.body && <p className="source-excerpt">{source.body.slice(0, 450)}{source.body.length > 450 ? "…" : ""}</p>}{source.analysis_error && <div className="source-error">{source.analysis_error}</div>}<div className="source-actions">{source.file_name && <a href={`/api/projects/${projectId}/sources/${source.id}/file`}>Baixar arquivo ↗</a>}{["failed", "needs_key"].includes(source.analysis_status) && <button disabled={processing === source.id} onClick={async () => { setProcessing(source.id); try { const result = await post<{ status: string; error?: string }>(`/api/projects/${projectId}/sources/${source.id}/reprocess`, {}); await onRefresh(result.status === "completed" ? "Fonte analisada" : result.error || "Análise pendente"); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao reprocessar"); } finally { setProcessing(""); } }}>{processing === source.id ? "Analisando..." : "Tentar analisar novamente"}</button>}</div></div>)}{!sources.length && <div className="panel"><Empty icon="▧" title="O projeto ainda não tem fontes" text="Adicione uma reunião, mensagem ou arquivo para alimentar a memória compartilhada." /></div>}</div></>;
+  const [expanded, setExpanded] = useState<string[]>([]);
+  const [pending, setPending] = useState<{ body: string; fileName: string } | null>(null);
+  const textRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { if (focusSignal) textRef.current?.focus(); }, [focusSignal]);
+  useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [sources.length, pending]);
+
+  async function send() {
+    const message = body.trim();
+    const attachment = file;
+    if (sending || (!message && !attachment)) return;
+    setSending(true);
+    setPending({ body: message, fileName: attachment?.name || "" });
+    setBody("");
+    setFile(null);
+    if (fileRef.current) fileRef.current.value = "";
+    try {
+      let fileData = "";
+      if (attachment) {
+        if (attachment.size > 5 * 1024 * 1024) throw new Error("O arquivo deve ter até 5 MB");
+        fileData = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+          reader.onerror = () => reject(new Error("Falha ao ler o arquivo"));
+          reader.readAsDataURL(attachment);
+        });
+      }
+      const extension = attachment?.name.toLowerCase().split(".").pop() || "";
+      const fallbackMime: Record<string, string> = { pdf: "application/pdf", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", txt: "text/plain", md: "text/markdown", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp" };
+      const title = message.split(/\r?\n/).find((line) => line.trim())?.slice(0, 120) || attachment?.name || "Nova informação";
+      const result = await post<{ status: string; extractedCount: number; error?: string }>(`/api/projects/${projectId}/sources`, {
+        title, body: message, fileName: attachment?.name, contentType: attachment?.type || fallbackMime[extension] || "", fileData,
+      });
+      await onRefresh(result.status === "completed" ? `Informação analisada · ${result.extractedCount} assunto(s) identificado(s)` : "Informação registrada");
+      if (result.status !== "completed" && result.error) setError(result.error);
+    } catch (cause) {
+      setBody(message);
+      setFile(attachment);
+      setError(cause instanceof Error ? cause.message : "Falha ao enviar informação");
+    } finally {
+      setPending(null);
+      setSending(false);
+    }
+  }
+
+  return <div className="conversation-page">
+    <div className="page-heading conversation-heading"><div><div className="eyebrow">MEMÓRIA COMPARTILHADA</div><h1>Conversa do projeto</h1><p>Conte o que aconteceu ou anexe um arquivo. A análise organiza as informações na estrutura do projeto.</p></div></div>
+    <div className="conversation-feed" aria-label="Informações do projeto">
+      {!sources.length && !pending && <div className="conversation-empty"><span>✦</span><h2>Comece com uma mensagem</h2><p>Escreva uma atualização, cole uma transcrição ou anexe um arquivo. Você não precisa escolher categoria nem preencher formulário.</p></div>}
+      {sources.slice().reverse().map((source) => {
+        const isExpanded = expanded.includes(source.id);
+        const longBody = source.body && source.body.length > 1800;
+        return <article className="chat-message" key={source.id}>
+          <span className="chat-avatar">{source.kind === "file" ? "▧" : "≡"}</span>
+          <div className="chat-bubble">
+            <div className="chat-meta"><time>{date(source.created_at)}</time><span className={`source-state ${source.analysis_status}`}>{source.analysis_status === "completed" ? "Analisado" : source.analysis_status === "needs_key" ? "IA pendente" : source.analysis_status === "failed" ? "Falha na análise" : source.analysis_status === "manual" ? "Manual" : "Analisando"}</span></div>
+            {(!source.body || !source.body.startsWith(source.title)) && <strong className="chat-title">{source.title}</strong>}
+            {source.body && <p className="chat-body">{longBody && !isExpanded ? `${source.body.slice(0, 1800)}…` : source.body}</p>}
+            {longBody && <button className="chat-link" onClick={() => setExpanded((current) => isExpanded ? current.filter((id) => id !== source.id) : [...current, source.id])}>{isExpanded ? "Mostrar menos" : "Ler mensagem completa"}</button>}
+            {source.file_name && <a className="chat-file" href={`/api/projects/${projectId}/sources/${source.id}/file`}>▧ {source.file_name} <span>Baixar ↗</span></a>}
+            {source.analysis_error && <div className="source-error">{source.analysis_error}</div>}
+            {["failed", "needs_key"].includes(source.analysis_status) && <button className="chat-link" disabled={processing === source.id} onClick={async () => { setProcessing(source.id); try { const result = await post<{ status: string; error?: string }>(`/api/projects/${projectId}/sources/${source.id}/reprocess`, {}); await onRefresh(result.status === "completed" ? "Informação analisada" : "Análise pendente"); if (result.error) setError(result.error); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao reprocessar"); } finally { setProcessing(""); } }}>{processing === source.id ? "Analisando..." : "Tentar analisar novamente"}</button>}
+          </div>
+        </article>;
+      })}
+      {pending && <div className="chat-message pending-message"><span className="chat-avatar">≡</span><div className="chat-bubble"><div className="chat-meta"><span className="source-state pending">Analisando...</span></div>{pending.body && <p className="chat-body">{pending.body}</p>}{pending.fileName && <div className="chat-file">▧ {pending.fileName}</div>}</div></div>}
+      <div ref={endRef} />
+    </div>
+    <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
+      <label className="sr-only" htmlFor="chat-input">Nova informação</label>
+      <textarea id="chat-input" ref={textRef} value={body} onChange={(event) => setBody(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Escreva uma atualização ou cole uma transcrição..." rows={3} disabled={sending} />
+      {file && <div className="attachment-chip">▧ {file.name}<button type="button" onClick={() => { setFile(null); if (fileRef.current) fileRef.current.value = ""; }} aria-label="Remover anexo">×</button></div>}
+      <div className="composer-actions"><button className="attach-button" type="button" title="Anexar arquivo" aria-label="Anexar arquivo" disabled={sending} onClick={() => fileRef.current?.click()}>＋</button><input ref={fileRef} type="file" accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp" onChange={(event) => setFile(event.target.files?.[0] || null)} hidden /><span>PDF, DOCX, texto ou imagem · até 5 MB</span><button className="button primary" disabled={sending || (!body.trim() && !file)}>{sending ? "Analisando..." : "Enviar ↗"}</button></div>
+    </form>
+  </div>;
 }
 
 function StructureView({ nodes, projectId, owner, onRefresh, setError }: { nodes: Node[]; projectId: string; owner: boolean; onRefresh: (message?: string) => Promise<void>; setError: (value: string) => void }) {
@@ -182,12 +260,6 @@ function ReportsView({ items, nodes, project }: { items: Item[]; nodes: Node[]; 
 }
 
 function ReportTable({ items }: { items: Item[] }) { return <table><thead><tr><th>Assunto</th><th>Estado</th><th>Prazo</th><th>Fonte</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td>{item.title}</td><td>{statusName[item.status]}</td><td>{date(item.due_date)}</td><td>{item.source_title || "Manual"}</td></tr>)}</tbody></table>; }
-
-function SourceModal({ projectId, busy, setBusy, close, onDone, setError }: { projectId: string; busy: boolean; setBusy: (value: boolean) => void; close: () => void; onDone: (message?: string) => Promise<void>; setError: (value: string) => void }) {
-  const [title, setTitle] = useState(""); const [body, setBody] = useState(""); const [file, setFile] = useState<File | null>(null);
-  async function submit(event: FormEvent) { event.preventDefault(); setBusy(true); try { let fileData = ""; if (file) { if (file.size > 5 * 1024 * 1024) throw new Error("O arquivo deve ter até 5 MB"); fileData = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1] || ""); reader.onerror = () => reject(new Error("Falha ao ler arquivo")); reader.readAsDataURL(file); }); } const result = await post<{ status: string; extractedCount: number; error?: string }>(`/api/projects/${projectId}/sources`, { title, body, fileName: file?.name, contentType: file?.type || (file?.name.endsWith(".md") ? "text/markdown" : ""), fileData }); close(); await onDone(result.status === "completed" ? `${result.extractedCount} assunto(s) identificado(s)` : result.error || "Fonte registrada; análise pendente"); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao registrar fonte"); } finally { setBusy(false); } }
-  return <div className="modal-backdrop" onMouseDown={close}><div className="modal" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Nova informação"><button className="close" onClick={close}>×</button><div className="eyebrow">ALIMENTE A MEMÓRIA</div><h2>Nova informação</h2><p>Cole uma mensagem ou transcrição e, se desejar, anexe um arquivo. A análise tentará relacionar os fatos aos assuntos existentes.</p><form onSubmit={(event) => void submit(event)}><label>Título<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Ex.: Reunião de acompanhamento 17/10" required /></label><label>Texto ou transcrição<textarea value={body} onChange={(event) => setBody(event.target.value)} rows={8} placeholder="Cole aqui o conteúdo da reunião, mensagem ou atualização..." /></label><label className="file-picker">{file ? `▧ ${file.name}` : "▧ Selecionar arquivo · PDF, DOCX, TXT ou imagem (até 5 MB)"}<input type="file" accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label><div className="modal-actions"><button type="button" className="button ghost" onClick={close}>Cancelar</button><button className="button primary" disabled={busy || (!body.trim() && !file)}>{busy ? "Registrando e analisando..." : "Registrar informação"}</button></div></form></div></div>;
-}
 
 function ManualModal({ projectId, nodes, close, onDone, setError }: { projectId: string; nodes: Node[]; close: () => void; onDone: (message?: string) => Promise<void>; setError: (value: string) => void }) {
   const [form, setForm] = useState({ title: "", summary: "", nodeId: "", location: "", discipline: "", supplier: "", responsible: "", status: "pendente", dueDate: "", attention: false });

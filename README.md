@@ -8,7 +8,7 @@ Aplicação web para reunir informações de projetos, acompanhar assuntos e ger
 
 - Cria projetos com estrutura inicial ou em branco.
 - Permite adicionar, renomear e arquivar categorias sem apagar assuntos já registrados.
-- Recebe texto, transcrições, PDF, DOCX, TXT, Markdown e imagens PNG/JPEG/WebP de até 5 MB.
+- Recebe mensagens, transcrições, PDF, DOCX, TXT, Markdown e imagens PNG/JPEG/WebP de até 5 MB em uma conversa do projeto. Basta escrever ou anexar e enviar; o título é criado automaticamente.
 - Usa a API do OpenRouter para extrair assuntos, prazos, responsáveis, fornecedores e evidências, ligando atualizações aos assuntos já conhecidos quando houver correspondência clara. A API da OpenAI continua disponível como alternativa.
 - Mantém fonte original, histórico por assunto, atualização manual e relatórios imprimíveis.
 - Convida participantes por e-mail para um projeto específico. A entrega automática usa SMTP; sem SMTP, a interface disponibiliza um link de convite para o administrador enviar manualmente.
