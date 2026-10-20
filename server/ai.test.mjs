@@ -200,3 +200,37 @@ test('síntese separa subestações dentro do assunto e preserva locais de trech
     else process.env.OPENROUTER_API_KEY = oldKey;
   }
 });
+
+test('análise complementar separa locais quando a síntese inicial os deixa misturados', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const requests = [];
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    requests.push(request);
+    const result = request.text.format.name === 'topic_history_summary'
+      ? { bullets: [{ item_id: 'disjuntores', text: 'Ibicoara em transporte; Itabira liberada para entrega.', locations: [] }], important_change: '', changed_item_id: '', change_before: '', change_after: '' }
+      : { breakdowns: [{ item_id: 'disjuntores', general_text: 'Entregas em acompanhamento.', locations: [
+        { name: 'Ibicoara', text: 'Disjuntores em transporte.' },
+        { name: 'Itabira', text: 'Entrega liberada; Fabian deve verificar.' },
+      ] }] };
+    return { ok: true, json: async () => ({ output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(result) }] }] }) };
+  };
+  try {
+    const result = await summarizeTopicHistory({
+      projectName: 'Teste', topicPath: 'Equipamentos > Disjuntores',
+      items: [{ id: 'disjuntores', title: 'Entrega de disjuntores', location: 'Ibicoara, Itabira', updated_at: '2026-10-20T10:00:00Z', status: 'em_andamento', summary: 'Ibicoara em transporte; Itabira liberada para entrega.', responsible: 'Fabian', supplier: '', due_date: '', attention: 0 }],
+      updates: [],
+    });
+    assert.equal(requests.length, 2);
+    assert.match(requests[1].input[1].content[0].text, /"locais_citados":\["Ibicoara","Itabira"\]/);
+    assert.match(result.summary, /• Entrega de disjuntores: Entregas em acompanhamento\. \(Situação: em andamento · Responsável: Fabian\)/);
+    assert.match(result.summary, /\n  ◦ Ibicoara: Disjuntores em transporte\./);
+    assert.match(result.summary, /\n  ◦ Itabira: Entrega liberada; Fabian deve verificar\./);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
