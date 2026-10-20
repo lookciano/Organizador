@@ -108,10 +108,14 @@ export async function prepareTopicSummaries(projectId, nodes, items) {
     const status = !old || old.revision !== revision || retryWithKey ? initialStatus : old.analysis_status;
     const current = { node_id: node.id, summary: old?.summary || '', important_change: status === 'completed' ? old?.important_change || '' : '', analysis_status: status, analysis_error: status === 'failed' ? old?.analysis_error : null, generated_at: old?.generated_at || null };
     result.push(current);
-    if (hasModelKey() && ['pending', 'processing'].includes(status)) jobs.push([node.id, projectId, revision]);
+    if (hasModelKey() && ['pending', 'processing'].includes(status)) {
+      const work = records.reduce((total, item) => total + Number(item.update_count || 0) + 1, 0);
+      jobs.push({ nodeId: node.id, projectId, revision, work });
+    }
   }
   await Promise.all(writes);
-  for (const [nodeId, ownerId, revision] of jobs) schedule(nodeId, ownerId, revision);
+  jobs.sort((a, b) => a.work - b.work);
+  for (const job of jobs) schedule(job.nodeId, job.projectId, job.revision);
   return result;
 }
 
