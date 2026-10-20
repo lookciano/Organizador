@@ -10,7 +10,8 @@ type Member = { id: string; email: string; role: string };
 type Invitation = { id: string; email: string; role: string; expires_at: string; accepted_at: string | null; created_at: string };
 type Update = { id: string; summary: string; evidence: string; previous_status: string | null; new_status: string; created_at: string; source_title: string | null; author_email: string | null };
 type HistoryEntry = { id: string; item_id: string; summary: string; evidence: string; created_at: string; source_title: string | null; author_email: string | null };
-type State = { user: User; projects: Project[]; project?: Project; nodes?: Node[]; sources?: Source[]; items?: Item[]; members?: Member[]; invitations?: Invitation[] };
+type TopicSummary = { node_id: string; summary: string; important_change: string; analysis_status: string; analysis_error: string | null; generated_at: string | null };
+type State = { user: User; projects: Project[]; project?: Project; nodes?: Node[]; sources?: Source[]; items?: Item[]; members?: Member[]; invitations?: Invitation[]; topicSummaries?: TopicSummary[] };
 type View = "overview" | "items" | "sources" | "structure" | "people" | "reports";
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
@@ -106,7 +107,7 @@ export default function App() {
     return () => { window.clearInterval(interval); document.removeEventListener("visibilitychange", updateIfVisible); };
   }, [Boolean(state), projectId, inviteToken, refresh]);
 
-  const hasProcessingSource = Boolean(state?.sources?.some((source) => ["pending", "processing"].includes(source.analysis_status)));
+  const hasProcessingSource = Boolean(state?.sources?.some((source) => ["pending", "processing"].includes(source.analysis_status)) || state?.topicSummaries?.some((summary) => ["pending", "processing"].includes(summary.analysis_status)));
   useEffect(() => {
     if (!hasProcessingSource || !projectId) return;
     const interval = window.setInterval(() => { if (!document.hidden) void refresh(projectId); }, 8000);
@@ -150,7 +151,7 @@ export default function App() {
       {error && <div className="alert error" role="alert">{error}<button onClick={() => setError("")}>×</button></div>}
       {notice && <div className="alert success" role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
       {!project ? <CreateProject onCreated={(id) => chooseProject(id)} setBusy={setBusy} busy={busy} setError={setError} /> : <div className="content">
-        {view === "overview" && <LivingReportView project={project} items={items} nodes={nodes} syncedAt={syncedAt} onRefresh={() => refresh(projectId)} onOpen={openItem} onCompose={() => { setView("sources"); setComposerFocus((value) => value + 1); }} />}
+        {view === "overview" && <LivingReportView project={project} items={items} nodes={nodes} topicSummaries={state.topicSummaries || []} syncedAt={syncedAt} onRefresh={() => refresh(projectId)} onOpen={openItem} onCompose={() => { setView("sources"); setComposerFocus((value) => value + 1); }} />}
         {view === "items" && <ItemsView items={items} nodes={nodes} onOpen={openItem} onManual={() => setShowManual(true)} />}
         {view === "sources" && <SourcesView sources={sources} projectId={projectId} onRefresh={after} setError={setError} focusSignal={composerFocus} />}
         {view === "structure" && <StructureView nodes={nodes} projectId={projectId} owner={project.role === "owner"} onRefresh={after} setError={setError} />}
@@ -210,10 +211,24 @@ function CategoryQuestion({ item, projectId, options, onRefresh }: { item: Item;
   }}>{busy ? "Analisando..." : "Tentar identificar com IA"}</button></div>{info && <small>{info}</small>}{error && <small role="alert">{error}</small>}</form>;
 }
 
-function LivingReportView({ project, items, nodes, syncedAt, onRefresh, onOpen, onCompose }: {
+function TopicSynthesis({ value, onRetry }: { value?: TopicSummary; onRetry: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const updating = ["pending", "processing"].includes(value?.analysis_status || "");
+  const unavailable = ["failed", "needs_key"].includes(value?.analysis_status || "");
+  return <div className="live-topic-synthesis">
+    <div className="live-synthesis-heading"><strong>SÍNTESE DO TÓPICO</strong><small>{updating ? "Atualizando síntese..." : value?.generated_at ? `Gerada em ${dateTime(value.generated_at)}` : ""}</small></div>
+    {value?.summary ? <p>{value.summary}</p> : <p className="live-synthesis-placeholder">{unavailable ? "Síntese ainda indisponível." : "Analisando o histórico deste tópico..."}</p>}
+    {value?.important_change && <div className="live-synthesis-change"><strong>Mudança relevante</strong><p>{value.important_change}</p></div>}
+    {unavailable && <div className="live-synthesis-error"><span>Não foi possível atualizar a síntese.</span><button disabled={busy} onClick={async () => { setBusy(true); setError(""); try { await onRetry(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao tentar novamente"); } finally { setBusy(false); } }}>{busy ? "Tentando..." : "Tentar novamente"}</button>{error && <span role="alert">{error}</span>}</div>}
+  </div>;
+}
+
+function LivingReportView({ project, items, nodes, topicSummaries, syncedAt, onRefresh, onOpen, onCompose }: {
   project: Project;
   items: Item[];
   nodes: Node[];
+  topicSummaries: TopicSummary[];
   syncedAt: string | null;
   onRefresh: () => Promise<void>;
   onOpen: (item: Item) => Promise<void>;
@@ -257,6 +272,7 @@ function LivingReportView({ project, items, nodes, syncedAt, onRefresh, onOpen, 
   }
   const unclassified = items.filter((item) => !item.node_id || !activeIds.has(item.node_id));
   const options = categoryOptions(nodes);
+  const summaryByNode = new Map(topicSummaries.map((summary) => [summary.node_id, summary]));
   const roots = childrenByParent.get(null) || [];
   const countUnder = (id: string): number => (itemsByNode.get(id)?.length || 0) + (childrenByParent.get(id) || []).reduce((total, child) => total + countUnder(child.id), 0);
   const openCount = items.filter((item) => item.status !== "concluido" && item.status !== "informativo").length;
@@ -292,8 +308,10 @@ function LivingReportView({ project, items, nodes, syncedAt, onRefresh, onOpen, 
     const children = childrenByParent.get(node.id) || [];
     const total = countUnder(node.id);
     const title = depth === 0 ? <h2>{node.title}</h2> : depth === 1 ? <h3>{node.title}</h3> : <h4>{node.title}</h4>;
+    const synthesis = summaryByNode.get(node.id);
     return <section className={`live-node live-depth-${Math.min(depth, 2)}`} id={`topico-${node.id}`} key={node.id}>
       <div className="live-node-heading">{depth === 0 && <span className="live-section-number">{String(sectionNumber || 1).padStart(2, "0")}</span>}<div>{title}{depth === 0 && <small>{total} assunto(s) com informação</small>}</div></div>
+      {total > 0 && <TopicSynthesis value={synthesis} onRetry={async () => { await post(`/api/projects/${project.id}/topics/${node.id}/summary/retry`, {}); await onRefresh(); }} />}
       {direct.map((item) => topic(item))}
       {!direct.length && !children.length && <p className="live-empty-topic">Sem informação registrada neste tópico.</p>}
       {children.map((child) => renderNode(child, depth + 1))}

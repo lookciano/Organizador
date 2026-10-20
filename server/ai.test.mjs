@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyNode, extractItems, structurePaths } from './ai.mjs';
+import { classifyNode, extractItems, structurePaths, summarizeTopicHistory } from './ai.mjs';
 import { splitForAnalysis } from './file-text.mjs';
 
 const nodes = [
@@ -81,6 +81,42 @@ test('arquivo de texto longo é analisado em vários trechos sem perder assuntos
     assert.equal(result.length, 20);
     assert.equal(result[0].nodeId, 'ouro-cub');
     assert.equal(result[19].nodeId, 'ouro-spcs');
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
+
+test('síntese do tópico percorre todo o histórico e mantém uma mudança sutil', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const requests = [];
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    requests.push(request);
+    const result = requests.length === 1
+      ? { summary: 'Revisão em andamento.', important_change: '' }
+      : { summary: 'Revisão em andamento; o prazo mudou para 22/10.', important_change: 'Prazo alterado para 22/10.' };
+    return { ok: true, json: async () => ({ output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(result) }] }] }) };
+  };
+  try {
+    const result = await summarizeTopicHistory({
+      projectName: 'Teste', topicPath: 'Equipamentos > Cubículos',
+      items: [{ id: 'a', title: 'Cubículo', updated_at: '2026-10-22T10:00:00Z', status: 'em_andamento', summary: 'Prazo 22/10', responsible: '', supplier: '', due_date: '2026-10-22', attention: 0 }],
+      updates: [
+        { id: '0', item_id: 'a', created_at: '2026-10-19T10:00:00Z', summary: `Planejamento inicial. ${'Contexto anterior. '.repeat(330)}`, evidence: '', new_status: 'pendente', source_title: 'Ata 0' },
+        { id: '1', item_id: 'a', created_at: '2026-10-20T10:00:00Z', summary: `Revisão em andamento. ${'Contexto repetido. '.repeat(330)}`, evidence: '', new_status: 'em_andamento', source_title: 'Ata 1' },
+        { id: '2', item_id: 'a', created_at: '2026-10-21T10:00:00Z', summary: `Revisão em andamento. ${'Contexto repetido. '.repeat(330)}`, evidence: '', new_status: 'em_andamento', source_title: 'Ata 2' },
+        { id: '3', item_id: 'a', created_at: '2026-10-22T10:00:00Z', summary: 'O prazo mudou para 22/10.', evidence: 'prazo 22/10', new_status: 'em_andamento', source_title: 'Ata 3' },
+      ],
+    });
+    assert.ok(requests.length > 1);
+    assert.ok(requests.some((request) => request.input[1].content[0].text.includes('O prazo mudou para 22/10.')));
+    assert.ok(requests.some((request) => request.input[1].content[0].text.includes('Mesma informação repetida 2 vezes')));
+    assert.ok(requests[1].input[1].content[0].text.includes('Revisão em andamento.'));
+    assert.equal(result.importantChange, 'Prazo alterado para 22/10.');
   } finally {
     globalThis.fetch = oldFetch;
     if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;

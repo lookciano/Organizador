@@ -103,6 +103,13 @@ const schema = [
     previous_status VARCHAR(30), new_status VARCHAR(30) NOT NULL,
     created_at VARCHAR(30) NOT NULL, INDEX (item_id), INDEX (source_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS topic_summaries (
+    node_id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL,
+    revision CHAR(64) NOT NULL, summary TEXT NOT NULL,
+    important_change TEXT NOT NULL, analysis_status VARCHAR(30) NOT NULL,
+    analysis_error TEXT, generated_at VARCHAR(30),
+    INDEX (project_id), INDEX (analysis_status)
+  )`,
 ];
 
 export async function initializeDatabase() {

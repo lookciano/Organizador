@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { db, createProject, initializeDatabase } from './db.mjs';
 import { classifyNode, extractItems } from './ai.mjs';
 import { MAX_SOURCE_TEXT } from './file-text.mjs';
+import { prepareTopicSummaries, refreshTopicSummariesForProject, retryTopicSummary } from './topic-summaries.mjs';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -30,6 +31,7 @@ const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
 const text = (value, max = 255) => String(value || '').trim().slice(0, max);
 const fail = (res, code, message) => res.status(code).json({ error: message });
 const run = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
+const updateTopicSummaries = (projectId) => { void refreshTopicSummariesForProject(projectId).catch((error) => console.error('Falha ao atualizar sínteses:', error)); };
 
 function readCookie(req, name) {
   return (req.headers.cookie || '').split(';').map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1) || '';
@@ -140,7 +142,14 @@ app.get('/api/state', requireUser, run(async (req, res) => {
     const bySource = new Map(counts.map((row) => [row.source_id, Number(row.topic_count)]));
     for (const source of sources) source.topic_count = bySource.get(source.id) || 0;
   }
-  res.json({ user: req.user, projects, project, nodes, sources, items, members, invitations });
+  const topicSummaries = await prepareTopicSummaries(projectId, nodes, items);
+  res.json({ user: req.user, projects, project, nodes, sources, items, members, invitations, topicSummaries });
+}));
+
+app.post('/api/projects/:projectId/topics/:nodeId/summary/retry', requireUser, membership, run(async (req, res) => {
+  const found = await retryTopicSummary(req.params.projectId, req.params.nodeId);
+  if (!found) return fail(res, 404, 'Síntese não encontrada');
+  res.json({ status: 'pending' });
 }));
 
 app.post('/api/projects', requireUser, run(async (req, res) => {
@@ -223,6 +232,7 @@ app.post('/api/projects/:projectId/nodes', requireUser, membership, ownerOnly, r
   const id = randomUUID();
   await db().execute('INSERT INTO structure_nodes (id,project_id,parent_id,title,sort_order,archived,created_at) VALUES (?,?,?,?,?,?,?)',
     [id, req.params.projectId, parentId, title, order[0].next_order, 0, now()]);
+  updateTopicSummaries(req.params.projectId);
   res.status(201).json({ id });
 }));
 
@@ -233,6 +243,7 @@ app.patch('/api/projects/:projectId/nodes/:nodeId', requireUser, membership, own
   if (!title) return fail(res, 400, 'Informe o título');
   const archived = req.body.archived === undefined ? rows[0].archived : Number(Boolean(req.body.archived));
   await db().execute('UPDATE structure_nodes SET title=?,archived=? WHERE id=?', [title, archived, req.params.nodeId]);
+  updateTopicSummaries(req.params.projectId);
   res.json({ ok: true });
 }));
 
@@ -280,6 +291,7 @@ async function processSource(sourceId, projectId) {
       await connection.commit();
     } catch (error) { await connection.rollback(); throw error; }
     finally { connection.release(); }
+    updateTopicSummaries(projectId);
     return { extractedCount: extracted.length, status: 'completed' };
   } catch (error) {
     const status = !process.env.OPENROUTER_API_KEY && !process.env.OPENAI_API_KEY ? 'needs_key' : 'failed';
@@ -388,6 +400,7 @@ app.post('/api/projects/:projectId/items', requireUser, membership, run(async (r
     await connection.execute('INSERT INTO item_updates (id,item_id,source_id,author_id,summary,evidence,previous_status,new_status,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
       [randomUUID(), itemId, sourceId, req.user.id, summary, summary, null, req.body.status || 'pendente', stamp]);
     await connection.commit();
+    updateTopicSummaries(req.params.projectId);
     res.status(201).json({ id: itemId, classification });
   } catch (error) { await connection.rollback(); throw error; }
   finally { connection.release(); }
@@ -403,6 +416,7 @@ app.patch('/api/projects/:projectId/items/:itemId/category', requireUser, member
   if (!items.length) return fail(res, 404, 'Assunto não encontrado');
   if (!nodes.length) return fail(res, 400, 'Tópico inválido');
   await db().execute('UPDATE items SET node_id=? WHERE id=? AND project_id=?', [nodeId, req.params.itemId, req.params.projectId]);
+  updateTopicSummaries(req.params.projectId);
   res.json({ ok: true });
 }));
 
@@ -416,6 +430,7 @@ app.post('/api/projects/:projectId/items/:itemId/category/suggest', requireUser,
   const result = await classifyNode({ ...items[0], nodes });
   if (!result.nodeId) return res.json({ classification: 'needs_confirmation' });
   await db().execute('UPDATE items SET node_id=? WHERE id=? AND project_id=?', [result.nodeId, req.params.itemId, req.params.projectId]);
+  updateTopicSummaries(req.params.projectId);
   res.json({ classification: 'automatic' });
 }));
 
@@ -442,6 +457,7 @@ app.patch('/api/projects/:projectId/items/:itemId', requireUser, membership, run
     await connection.execute('INSERT INTO item_updates (id,item_id,source_id,author_id,summary,evidence,previous_status,new_status,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
       [randomUUID(), old.id, null, req.user.id, text(req.body.note, 2000) || 'Atualização manual', '', old.status, status, stamp]);
     await connection.commit();
+    updateTopicSummaries(req.params.projectId);
     res.json({ ok: true });
   } catch (error) { await connection.rollback(); throw error; }
   finally { connection.release(); }
