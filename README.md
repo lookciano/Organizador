@@ -11,8 +11,9 @@ Aplicação web para reunir informações de projetos, acompanhar assuntos e ger
 - Atualiza o relatório automaticamente a cada minuto enquanto a página está visível, com opção de atualizar na hora e imprimir ou salvar em PDF.
 - Permite adicionar, renomear e arquivar categorias sem apagar assuntos já registrados.
 - Recebe mensagens, transcrições, PDF, DOCX, TXT, Markdown e imagens PNG/JPEG/WebP de até 5 MB em uma conversa do projeto. Basta escrever ou anexar e enviar; o título é criado automaticamente.
-- Usa a API do OpenRouter para extrair assuntos, prazos, responsáveis, fornecedores e evidências, ligando atualizações aos assuntos já conhecidos quando houver correspondência clara. A API da OpenAI continua disponível como alternativa.
-- Mantém fonte original e histórico por assunto. Cada assunto mostra a última atualização, sua data e o total de registros; o relatório geral inclui até duas atualizações anteriores.
+- Usa a API do OpenRouter para extrair assuntos, prazos, responsáveis, fornecedores e evidências. A classificação considera o caminho completo de cada tópico, inclusive quando um mesmo local aparece em diferentes ramos. A API da OpenAI continua disponível como alternativa.
+- Mantém fonte original e histórico por assunto. O relatório vivo mostra a última atualização, sua data e todo o histórico anterior.
+- Classifica registros manuais automaticamente quando o tópico fica em branco. Assuntos cuja categoria é duvidosa aparecem no relatório com uma pergunta simples para confirmação; também é possível tentar a classificação com IA novamente ou corrigir o tópico de um assunto já classificado.
 - Permite atualizar assuntos manualmente e imprimir relatórios.
 - Convida participantes por e-mail para um projeto específico. A entrega automática usa SMTP; sem SMTP, a interface disponibiliza um link de convite para o administrador enviar manualmente.
 

@@ -23,6 +23,21 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
 const post = <T,>(path: string, body: unknown, method = "POST") => api<T>(path, { method, body: JSON.stringify(body) });
 const date = (value: string | null | undefined) => value ? new Date(value).toLocaleDateString("pt-BR") : "—";
 const dateTime = (value: string | null | undefined) => value ? new Date(value).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "—";
+function categoryOptions(nodes: Node[]) {
+  const active = nodes.filter((node) => !node.archived);
+  const byId = new Map(active.map((node) => [node.id, node]));
+  return active.map((node) => {
+    const titles = [node.title];
+    const seen = new Set([node.id]);
+    let parent = node.parent_id ? byId.get(node.parent_id) : undefined;
+    while (parent && !seen.has(parent.id)) {
+      titles.unshift(parent.title);
+      seen.add(parent.id);
+      parent = parent.parent_id ? byId.get(parent.parent_id) : undefined;
+    }
+    return { id: node.id, label: titles.join(" › ") };
+  }).sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
+}
 const statusName: Record<string, string> = { pendente: "Pendente", em_andamento: "Em andamento", bloqueado: "Bloqueado", concluido: "Concluído", informativo: "Informativo" };
 const views: { id: View; label: string; icon: string }[] = [
   { id: "overview", label: "Relatório vivo", icon: "◫" },
@@ -136,8 +151,8 @@ export default function App() {
         {view === "reports" && <ReportsView items={items} nodes={nodes} project={project} />}
       </div>}
     </main>
-    {showManual && project && <ManualModal projectId={projectId} nodes={nodes} close={() => setShowManual(false)} onDone={after} setError={setError} />}
-    {selectedItem && project && <ItemDrawer item={selectedItem} updates={updates} projectId={projectId} close={() => setSelectedItem(null)} onDone={async () => { await after(); setSelectedItem(null); }} setError={setError} />}
+    {showManual && project && <ManualModal projectId={projectId} nodes={nodes} close={() => setShowManual(false)} onDone={async (message) => { await after(message); setView("overview"); }} setError={setError} />}
+    {selectedItem && project && <ItemDrawer item={selectedItem} nodes={nodes} updates={updates} projectId={projectId} close={() => setSelectedItem(null)} onDone={async () => { await after(); setSelectedItem(null); }} setError={setError} />}
   </div>;
 }
 
@@ -158,6 +173,35 @@ function CreateProject({ onCreated, busy, setBusy, setError }: { onCreated: (id:
 }
 
 function Empty({ icon, title, text }: { icon: string; title: string; text: string }) { return <div className="empty"><div className="empty-icon">{icon}</div><strong>{title}</strong><p>{text}</p></div>; }
+
+function CategoryQuestion({ item, projectId, options, onRefresh }: { item: Item; projectId: string; options: { id: string; label: string }[]; onRefresh: () => Promise<void> }) {
+  const [nodeId, setNodeId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
+  if (!options.length) return null;
+  return <form className="category-question" onSubmit={async (event) => {
+    event.preventDefault();
+    if (!nodeId) return;
+    setBusy(true);
+    setError("");
+    try {
+      await post(`/api/projects/${projectId}/items/${item.id}/category`, { nodeId }, "PATCH");
+      await onRefresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível salvar o tópico"); }
+    finally { setBusy(false); }
+  }}><label htmlFor={`categoria-${item.id}`}>Em qual tópico esta informação entra?</label><div><select id={`categoria-${item.id}`} value={nodeId} onChange={(event) => setNodeId(event.target.value)} required><option value="">Escolha pela estrutura do projeto</option>{options.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select><button type="submit" className="button secondary" disabled={!nodeId || busy}>Confirmar tópico</button><button type="button" className="button ghost" disabled={busy} onClick={async () => {
+    setBusy(true);
+    setError("");
+    setInfo("");
+    try {
+      const result = await post<{ classification: string }>(`/api/projects/${projectId}/items/${item.id}/category/suggest`, {});
+      if (result.classification === "automatic") await onRefresh();
+      else setInfo("A IA ainda encontrou mais de um tópico possível. Escolha o caminho acima para confirmar.");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível analisar o tópico"); }
+    finally { setBusy(false); }
+  }}>{busy ? "Analisando..." : "Tentar identificar com IA"}</button></div>{info && <small>{info}</small>}{error && <small role="alert">{error}</small>}</form>;
+}
 
 function LivingReportView({ project, items, nodes, syncedAt, onRefresh, onOpen, onCompose }: {
   project: Project;
@@ -205,6 +249,7 @@ function LivingReportView({ project, items, nodes, syncedAt, onRefresh, onOpen, 
     itemsByNode.set(item.node_id, group);
   }
   const unclassified = items.filter((item) => !item.node_id || !activeIds.has(item.node_id));
+  const options = categoryOptions(nodes);
   const roots = childrenByParent.get(null) || [];
   const countUnder = (id: string): number => (itemsByNode.get(id)?.length || 0) + (childrenByParent.get(id) || []).reduce((total, child) => total + countUnder(child.id), 0);
   const openCount = items.filter((item) => item.status !== "concluido" && item.status !== "informativo").length;
@@ -212,7 +257,7 @@ function LivingReportView({ project, items, nodes, syncedAt, onRefresh, onOpen, 
   const overdueCount = items.filter(isOverdue).length;
   const emptyLeafCount = activeNodes.filter((node) => !(childrenByParent.get(node.id)?.length) && !(itemsByNode.get(node.id)?.length)).length;
 
-  const topic = (item: Item) => {
+  const topic = (item: Item, needsCategory = false) => {
     const allUpdates = itemHistory[item.id] || [];
     const previous = allUpdates.slice(1);
     const latest = item.latest_update?.trim();
@@ -230,6 +275,7 @@ function LivingReportView({ project, items, nodes, syncedAt, onRefresh, onOpen, 
       {details.length > 0 && <p className="live-topic-details">{details.join(" · ")}</p>}
       <div className="live-topic-update"><strong>Última atualização · {dateTime(item.latest_update_at || item.updated_at)}</strong>{latest && latest !== summary && <p>{latest}</p>}{allUpdates[0]?.evidence && allUpdates[0].evidence !== latest && allUpdates[0].evidence !== summary && <blockquote>“{allUpdates[0].evidence}”</blockquote>}<small>{item.source_title ? `Fonte: ${item.source_title}` : "Registro manual"} · {item.update_count || 0} registro(s)</small></div>
       {previous.length > 0 && <div className="live-topic-history"><strong>Histórico de atualizações</strong>{previous.map((update) => <div className="live-history-entry" key={update.id}><p><time>{dateTime(update.created_at)}</time> · {update.summary}</p>{update.evidence && update.evidence !== update.summary && <blockquote>“{update.evidence}”</blockquote>}{update.source_title && <small>Fonte: {update.source_title}</small>}</div>)}</div>}
+      {needsCategory && <CategoryQuestion item={item} projectId={project.id} options={options} onRefresh={onRefresh} />}
       <button className="live-topic-action" onClick={() => void onOpen(item)}>Abrir histórico completo e atualizar →</button>
     </article>;
   };
@@ -241,7 +287,7 @@ function LivingReportView({ project, items, nodes, syncedAt, onRefresh, onOpen, 
     const title = depth === 0 ? <h2>{node.title}</h2> : depth === 1 ? <h3>{node.title}</h3> : <h4>{node.title}</h4>;
     return <section className={`live-node live-depth-${Math.min(depth, 2)}`} id={`topico-${node.id}`} key={node.id}>
       <div className="live-node-heading">{depth === 0 && <span className="live-section-number">{String(sectionNumber || 1).padStart(2, "0")}</span>}<div>{title}{depth === 0 && <small>{total} assunto(s) com informação</small>}</div></div>
-      {direct.map(topic)}
+      {direct.map((item) => topic(item))}
       {!direct.length && !children.length && <p className="live-empty-topic">Sem informação registrada neste tópico.</p>}
       {children.map((child) => renderNode(child, depth + 1))}
     </section>;
@@ -249,10 +295,10 @@ function LivingReportView({ project, items, nodes, syncedAt, onRefresh, onOpen, 
 
   return <div className="living-report">
     <header className="living-header"><div><div className="eyebrow">ATA VIVA · LEITURA COMPLETA</div><h1>{project.name}</h1><p>{project.description || "Acompanhe todos os tópicos do projeto, as pendências e o que mudou em cada assunto."}</p><small>Sincronizado em {dateTime(syncedAt)} · Atualização automática a cada minuto</small></div><div className="living-header-actions"><button className="button secondary" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await onRefresh(); } finally { setRefreshing(false); } }}>{refreshing ? "Atualizando..." : "↻ Atualizar agora"}</button><button className="button secondary" onClick={() => window.print()}>Imprimir / PDF ↗</button></div></header>
-    <div className="living-summary"><span><strong>{items.length}</strong> assuntos registrados</span><span><strong>{openCount}</strong> em acompanhamento</span><span className={overdueCount ? "urgent" : ""}><strong>{overdueCount}</strong> atrasados</span><span className={attentionCount ? "urgent" : ""}><strong>{attentionCount}</strong> pontos de atenção</span><span><strong>{emptyLeafCount}</strong> tópicos sem registro</span></div>
+    <div className="living-summary"><span><strong>{items.length}</strong> assuntos registrados</span><span><strong>{openCount}</strong> em acompanhamento</span><span className={overdueCount ? "urgent" : ""}><strong>{overdueCount}</strong> atrasados</span><span className={attentionCount ? "urgent" : ""}><strong>{attentionCount}</strong> pontos de atenção</span>{unclassified.length > 0 && <a href="#topico-sem-categoria" className="category-summary"><strong>{unclassified.length}</strong> aguardando tópico</a>}<span><strong>{emptyLeafCount}</strong> tópicos sem registro</span></div>
     {historyError && <p className="report-history-error">O histórico anterior não carregou. Atualize a página para tentar novamente.</p>}
     <div className="living-layout"><nav className="living-contents" aria-label="Sumário do relatório"><strong>NESTA PÁGINA</strong>{roots.map((root, index) => <div className="living-contents-group" key={root.id}><a href={`#topico-${root.id}`}><span>{String(index + 1).padStart(2, "0")}</span>{root.title}<small>{countUnder(root.id)}</small></a>{(childrenByParent.get(root.id) || []).map((child) => <a className="living-contents-child" href={`#topico-${child.id}`} key={child.id}>{child.title}</a>)}</div>)}{unclassified.length > 0 && <a href="#topico-sem-categoria">Sem categoria <small>{unclassified.length}</small></a>}</nav>
-      <article className="living-document" aria-label="Relatório completo do projeto">{roots.map((root, index) => renderNode(root, 0, index + 1))}{unclassified.length > 0 && <section className="live-node live-depth-0" id="topico-sem-categoria"><div className="live-node-heading"><div><h2>Sem categoria ativa</h2><small>{unclassified.length} assunto(s) para organizar</small></div></div>{unclassified.map(topic)}</section>}{!roots.length && !unclassified.length && <div className="living-start"><h2>O relatório ainda não tem tópicos</h2><p>Crie uma estrutura ou registre a primeira informação para começar.</p><button className="button primary" onClick={onCompose}>Escrever atualização</button></div>}<footer className="living-footer">Fim do relatório · {items.length} assunto(s) · Sincronizado em {dateTime(syncedAt)}</footer></article>
+      <article className="living-document" aria-label="Relatório completo do projeto">{roots.map((root, index) => renderNode(root, 0, index + 1))}{unclassified.length > 0 && <section className="live-node live-depth-0" id="topico-sem-categoria"><div className="live-node-heading"><div><h2>Aguardando confirmação do tópico</h2><small>{unclassified.length} assunto(s) para organizar</small></div></div>{unclassified.map((item) => topic(item, true))}</section>}{!roots.length && !unclassified.length && <div className="living-start"><h2>O relatório ainda não tem tópicos</h2><p>Crie uma estrutura ou registre a primeira informação para começar.</p><button className="button primary" onClick={onCompose}>Escrever atualização</button></div>}<footer className="living-footer">Fim do relatório · {items.length} assunto(s) · Sincronizado em {dateTime(syncedAt)}</footer></article>
     </div>
   </div>;
 }
@@ -387,11 +433,12 @@ function ReportTable({ items }: { items: Item[] }) { return <table><thead><tr><t
 
 function ManualModal({ projectId, nodes, close, onDone, setError }: { projectId: string; nodes: Node[]; close: () => void; onDone: (message?: string) => Promise<void>; setError: (value: string) => void }) {
   const [form, setForm] = useState({ title: "", summary: "", nodeId: "", location: "", discipline: "", supplier: "", responsible: "", status: "pendente", dueDate: "", attention: false });
+  const [saving, setSaving] = useState(false);
   const change = (key: keyof typeof form, value: string | boolean) => setForm((before) => ({ ...before, [key]: value }));
-  return <div className="modal-backdrop" onMouseDown={close}><div className="modal" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Registro manual"><button className="close" onClick={close}>×</button><div className="eyebrow">REGISTRO DIRETO</div><h2>Novo assunto manual</h2><p>Use quando quiser registrar um assunto sem aguardar a análise automática.</p><form onSubmit={async (event) => { event.preventDefault(); try { await post(`/api/projects/${projectId}/items`, form); close(); await onDone("Assunto registrado"); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao registrar assunto"); } }}><label>Assunto<input required value={form.title} onChange={(event) => change("title", event.target.value)} /></label><label>Resumo<textarea required rows={3} value={form.summary} onChange={(event) => change("summary", event.target.value)} /></label><div className="form-grid"><label>Categoria<select value={form.nodeId} onChange={(event) => change("nodeId", event.target.value)}><option value="">Sem categoria</option>{nodes.filter((node) => !node.archived).map((node) => <option key={node.id} value={node.id}>{node.title}</option>)}</select></label><label>Estado<select value={form.status} onChange={(event) => change("status", event.target.value)}>{Object.entries(statusName).map(([key, value]) => <option key={key} value={key}>{value}</option>)}</select></label><label>Local<input value={form.location} onChange={(event) => change("location", event.target.value)} /></label><label>Disciplina<input value={form.discipline} onChange={(event) => change("discipline", event.target.value)} /></label><label>Fornecedor<input value={form.supplier} onChange={(event) => change("supplier", event.target.value)} /></label><label>Responsável<input value={form.responsible} onChange={(event) => change("responsible", event.target.value)} /></label><label>Prazo<input type="date" value={form.dueDate} onChange={(event) => change("dueDate", event.target.value)} /></label></div><label className="check-row"><input type="checkbox" checked={form.attention} onChange={(event) => change("attention", event.target.checked)} />Marcar como ponto de atenção</label><div className="modal-actions"><button type="button" className="button ghost" onClick={close}>Cancelar</button><button className="button primary">Salvar assunto</button></div></form></div></div>;
+  return <div className="modal-backdrop" onMouseDown={close}><div className="modal" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Registro manual"><button className="close" onClick={close}>×</button><div className="eyebrow">REGISTRO DIRETO</div><h2>Novo assunto manual</h2><p>Se deixar o tópico em automático, a IA tentará colocá-lo na estrutura do projeto.</p><form onSubmit={async (event) => { event.preventDefault(); setSaving(true); try { const result = await post<{ classification: string }>(`/api/projects/${projectId}/items`, form); close(); await onDone(result.classification === "needs_confirmation" ? "Assunto registrado. Confirme o tópico no relatório vivo." : "Assunto registrado no tópico"); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao registrar assunto"); } finally { setSaving(false); } }}><label>Assunto<input required value={form.title} onChange={(event) => change("title", event.target.value)} /></label><label>Resumo<textarea required rows={3} value={form.summary} onChange={(event) => change("summary", event.target.value)} /></label><div className="form-grid"><label>Tópico<select value={form.nodeId} onChange={(event) => change("nodeId", event.target.value)}><option value="">Classificar automaticamente</option>{categoryOptions(nodes).map((node) => <option key={node.id} value={node.id}>{node.label}</option>)}</select></label><label>Estado<select value={form.status} onChange={(event) => change("status", event.target.value)}>{Object.entries(statusName).map(([key, value]) => <option key={key} value={key}>{value}</option>)}</select></label><label>Local<input value={form.location} onChange={(event) => change("location", event.target.value)} /></label><label>Disciplina<input value={form.discipline} onChange={(event) => change("discipline", event.target.value)} /></label><label>Fornecedor<input value={form.supplier} onChange={(event) => change("supplier", event.target.value)} /></label><label>Responsável<input value={form.responsible} onChange={(event) => change("responsible", event.target.value)} /></label><label>Prazo<input type="date" value={form.dueDate} onChange={(event) => change("dueDate", event.target.value)} /></label></div><label className="check-row"><input type="checkbox" checked={form.attention} onChange={(event) => change("attention", event.target.checked)} />Marcar como ponto de atenção</label><div className="modal-actions"><button type="button" className="button ghost" onClick={close}>Cancelar</button><button className="button primary" disabled={saving}>{saving ? "Classificando..." : "Salvar assunto"}</button></div></form></div></div>;
 }
 
-function ItemDrawer({ item, updates, projectId, close, onDone, setError }: { item: Item; updates: Update[]; projectId: string; close: () => void; onDone: () => Promise<void>; setError: (value: string) => void }) {
-  const [status, setStatus] = useState(item.status); const [responsible, setResponsible] = useState(item.responsible); const [supplier, setSupplier] = useState(item.supplier); const [dueDate, setDueDate] = useState(item.due_date); const [note, setNote] = useState(""); const [attention, setAttention] = useState(Boolean(item.attention)); const [busy, setBusy] = useState(false);
-  return <div className="drawer-backdrop" onMouseDown={close}><aside className="drawer" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={item.title}><button className="close" onClick={close}>×</button><div className="eyebrow">ASSUNTO DO PROJETO</div><h2>{item.title}</h2><Status item={item} /><p className="drawer-summary">{item.summary}</p><section className="latest-update-card"><small>ÚLTIMA ATUALIZAÇÃO · {date(item.latest_update_at || item.updated_at)}</small><p>{item.latest_update || item.summary || "Sem atualização resumida"}</p><span>{item.update_count || 0} registro(s) no histórico{item.latest_update_author ? ` · ${item.latest_update_author}` : ""}</span></section><div className="detail-grid"><div><small>LOCAL</small><strong>{item.location || "Não identificado"}</strong></div><div><small>DISCIPLINA</small><strong>{item.discipline || "Não identificada"}</strong></div><div><small>FONTE MAIS RECENTE</small><strong>{item.source_title || "Registro manual"}</strong></div><div><small>ATUALIZAÇÃO</small><strong>{date(item.latest_update_at || item.updated_at)}</strong></div></div><form className="drawer-form" onSubmit={async (event) => { event.preventDefault(); setBusy(true); try { await post(`/api/projects/${projectId}/items/${item.id}`, { status, responsible, supplier, dueDate, note, attention }, "PATCH"); await onDone(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao atualizar"); } finally { setBusy(false); } }}><h3>Atualizar acompanhamento</h3><div className="form-grid"><label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}>{Object.entries(statusName).map(([key, value]) => <option key={key} value={key}>{value}</option>)}</select></label><label>Prazo<input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></label><label>Responsável<input value={responsible} onChange={(event) => setResponsible(event.target.value)} /></label><label>Fornecedor<input value={supplier} onChange={(event) => setSupplier(event.target.value)} /></label></div><label>Nota da atualização<textarea rows={2} value={note} onChange={(event) => setNote(event.target.value)} placeholder="O que mudou?" /></label><label className="check-row"><input type="checkbox" checked={attention} onChange={(event) => setAttention(event.target.checked)} />Ponto de atenção</label><button className="button primary" disabled={busy}>{busy ? "Salvando..." : "Salvar atualização"}</button></form><section className="timeline"><h3>Histórico e evidências</h3>{updates.map((update) => <div className="timeline-entry" key={update.id}><span className="timeline-dot" /><small>{date(update.created_at)} · {update.author_email || "Análise automática"}</small><p>{update.summary}</p>{update.evidence && <blockquote>“{update.evidence}”</blockquote>}{update.source_title && <small>Fonte: {update.source_title}</small>}</div>)}{!updates.length && <p className="muted-text">Nenhuma atualização registrada.</p>}</section></aside></div>;
+function ItemDrawer({ item, nodes, updates, projectId, close, onDone, setError }: { item: Item; nodes: Node[]; updates: Update[]; projectId: string; close: () => void; onDone: () => Promise<void>; setError: (value: string) => void }) {
+  const [status, setStatus] = useState(item.status); const [nodeId, setNodeId] = useState(nodes.some((node) => node.id === item.node_id && !node.archived) ? item.node_id || "" : ""); const [responsible, setResponsible] = useState(item.responsible); const [supplier, setSupplier] = useState(item.supplier); const [dueDate, setDueDate] = useState(item.due_date); const [note, setNote] = useState(""); const [attention, setAttention] = useState(Boolean(item.attention)); const [busy, setBusy] = useState(false);
+  return <div className="drawer-backdrop" onMouseDown={close}><aside className="drawer" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={item.title}><button className="close" onClick={close}>×</button><div className="eyebrow">ASSUNTO DO PROJETO</div><h2>{item.title}</h2><Status item={item} /><p className="drawer-summary">{item.summary}</p><section className="latest-update-card"><small>ÚLTIMA ATUALIZAÇÃO · {date(item.latest_update_at || item.updated_at)}</small><p>{item.latest_update || item.summary || "Sem atualização resumida"}</p><span>{item.update_count || 0} registro(s) no histórico{item.latest_update_author ? ` · ${item.latest_update_author}` : ""}</span></section><div className="detail-grid"><div><small>LOCAL</small><strong>{item.location || "Não identificado"}</strong></div><div><small>DISCIPLINA</small><strong>{item.discipline || "Não identificada"}</strong></div><div><small>FONTE MAIS RECENTE</small><strong>{item.source_title || "Registro manual"}</strong></div><div><small>ATUALIZAÇÃO</small><strong>{date(item.latest_update_at || item.updated_at)}</strong></div></div><form className="drawer-form" onSubmit={async (event) => { event.preventDefault(); setBusy(true); try { await post(`/api/projects/${projectId}/items/${item.id}`, { nodeId, status, responsible, supplier, dueDate, note, attention }, "PATCH"); await onDone(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao atualizar"); } finally { setBusy(false); } }}><h3>Atualizar acompanhamento</h3><div className="form-grid"><label>Tópico<select value={nodeId} onChange={(event) => setNodeId(event.target.value)}><option value="">Aguardando confirmação</option>{categoryOptions(nodes).map((node) => <option key={node.id} value={node.id}>{node.label}</option>)}</select></label><label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}>{Object.entries(statusName).map(([key, value]) => <option key={key} value={key}>{value}</option>)}</select></label><label>Prazo<input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></label><label>Responsável<input value={responsible} onChange={(event) => setResponsible(event.target.value)} /></label><label>Fornecedor<input value={supplier} onChange={(event) => setSupplier(event.target.value)} /></label></div><label>Nota da atualização<textarea rows={2} value={note} onChange={(event) => setNote(event.target.value)} placeholder="O que mudou?" /></label><label className="check-row"><input type="checkbox" checked={attention} onChange={(event) => setAttention(event.target.checked)} />Ponto de atenção</label><button className="button primary" disabled={busy}>{busy ? "Salvando..." : "Salvar atualização"}</button></form><section className="timeline"><h3>Histórico e evidências</h3>{updates.map((update) => <div className="timeline-entry" key={update.id}><span className="timeline-dot" /><small>{date(update.created_at)} · {update.author_email || "Análise automática"}</small><p>{update.summary}</p>{update.evidence && <blockquote>“{update.evidence}”</blockquote>}{update.source_title && <small>Fonte: {update.source_title}</small>}</div>)}{!updates.length && <p className="muted-text">Nenhuma atualização registrada.</p>}</section></aside></div>;
 }

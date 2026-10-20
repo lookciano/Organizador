@@ -5,7 +5,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { db, createProject, initializeDatabase } from './db.mjs';
-import { extractItems } from './ai.mjs';
+import { classifyNode, extractItems } from './ai.mjs';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -234,8 +234,8 @@ async function processSource(sourceId, projectId) {
   const [sourceRows] = await db().execute('SELECT s.*,p.name AS project_name FROM sources s JOIN projects p ON p.id=s.project_id WHERE s.id=? AND s.project_id=?', [sourceId, projectId]);
   const source = sourceRows[0];
   const [[nodes], [existingItems]] = await Promise.all([
-    db().execute('SELECT id,title FROM structure_nodes WHERE project_id=? AND archived=0', [projectId]),
-    db().execute('SELECT id,title,location,status FROM items WHERE project_id=? ORDER BY updated_at DESC LIMIT 100', [projectId]),
+    db().execute('SELECT id,parent_id,title FROM structure_nodes WHERE project_id=? AND archived=0', [projectId]),
+    db().execute('SELECT id,node_id,title,location,status FROM items WHERE project_id=? ORDER BY updated_at DESC LIMIT 100', [projectId]),
   ]);
   try {
     const extracted = await extractItems({ source: { projectName: source.project_name, title: source.title, body: source.body, fileData: source.file_data, contentType: source.content_type, fileName: source.file_name }, nodes, existingItems });
@@ -316,10 +316,25 @@ app.post('/api/projects/:projectId/items', requireUser, membership, run(async (r
   const title = text(req.body.title, 255);
   if (!title) return fail(res, 400, 'Informe o assunto');
   const summary = text(req.body.summary, 5000);
-  const nodeId = req.body.nodeId || null;
+  let nodeId = req.body.nodeId || null;
+  let classification = 'chosen';
   if (nodeId) {
     const [nodes] = await db().execute('SELECT id FROM structure_nodes WHERE id=? AND project_id=? AND archived=0', [nodeId, req.params.projectId]);
     if (!nodes.length) return fail(res, 400, 'Categoria inválida');
+  } else {
+    classification = 'needs_confirmation';
+    const [nodes] = await db().execute('SELECT id,parent_id,title FROM structure_nodes WHERE project_id=? AND archived=0', [req.params.projectId]);
+    if (nodes.length && (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY)) {
+      try {
+        const result = await classifyNode({ title, summary, location: text(req.body.location, 160), discipline: text(req.body.discipline, 160), nodes });
+        if (result.nodeId) {
+          nodeId = result.nodeId;
+          classification = 'automatic';
+        }
+      } catch (error) {
+        console.error('Falha ao classificar registro manual:', error);
+      }
+    }
   }
   const sourceId = randomUUID();
   const itemId = randomUUID();
@@ -334,9 +349,35 @@ app.post('/api/projects/:projectId/items', requireUser, membership, run(async (r
     await connection.execute('INSERT INTO item_updates (id,item_id,source_id,author_id,summary,evidence,previous_status,new_status,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
       [randomUUID(), itemId, sourceId, req.user.id, summary, summary, null, req.body.status || 'pendente', stamp]);
     await connection.commit();
-    res.status(201).json({ id: itemId });
+    res.status(201).json({ id: itemId, classification });
   } catch (error) { await connection.rollback(); throw error; }
   finally { connection.release(); }
+}));
+
+app.patch('/api/projects/:projectId/items/:itemId/category', requireUser, membership, run(async (req, res) => {
+  const nodeId = text(req.body.nodeId, 36);
+  if (!nodeId) return fail(res, 400, 'Escolha um tópico');
+  const [[items], [nodes]] = await Promise.all([
+    db().execute('SELECT id FROM items WHERE id=? AND project_id=?', [req.params.itemId, req.params.projectId]),
+    db().execute('SELECT id FROM structure_nodes WHERE id=? AND project_id=? AND archived=0', [nodeId, req.params.projectId]),
+  ]);
+  if (!items.length) return fail(res, 404, 'Assunto não encontrado');
+  if (!nodes.length) return fail(res, 400, 'Tópico inválido');
+  await db().execute('UPDATE items SET node_id=? WHERE id=? AND project_id=?', [nodeId, req.params.itemId, req.params.projectId]);
+  res.json({ ok: true });
+}));
+
+app.post('/api/projects/:projectId/items/:itemId/category/suggest', requireUser, membership, run(async (req, res) => {
+  const [[items], [nodes]] = await Promise.all([
+    db().execute('SELECT id,node_id,title,summary,location,discipline FROM items WHERE id=? AND project_id=?', [req.params.itemId, req.params.projectId]),
+    db().execute('SELECT id,parent_id,title FROM structure_nodes WHERE project_id=? AND archived=0', [req.params.projectId]),
+  ]);
+  if (!items.length) return fail(res, 404, 'Assunto não encontrado');
+  if (!nodes.length) return fail(res, 400, 'Crie um tópico na estrutura antes de classificar');
+  const result = await classifyNode({ ...items[0], nodes });
+  if (!result.nodeId) return res.json({ classification: 'needs_confirmation' });
+  await db().execute('UPDATE items SET node_id=? WHERE id=? AND project_id=?', [result.nodeId, req.params.itemId, req.params.projectId]);
+  res.json({ classification: 'automatic' });
 }));
 
 app.patch('/api/projects/:projectId/items/:itemId', requireUser, membership, run(async (req, res) => {
@@ -349,11 +390,16 @@ app.patch('/api/projects/:projectId/items/:itemId', requireUser, membership, run
   const supplier = req.body.supplier === undefined ? old.supplier : text(req.body.supplier, 160);
   const dueDate = req.body.dueDate === undefined ? old.due_date : (/^\d{4}-\d{2}-\d{2}$/.test(req.body.dueDate) ? req.body.dueDate : '');
   const attention = req.body.attention === undefined ? old.attention : Number(Boolean(req.body.attention));
+  const nodeId = req.body.nodeId === undefined ? old.node_id : text(req.body.nodeId, 36) || null;
+  if (nodeId) {
+    const [nodes] = await db().execute('SELECT id FROM structure_nodes WHERE id=? AND project_id=? AND archived=0', [nodeId, req.params.projectId]);
+    if (!nodes.length) return fail(res, 400, 'Tópico inválido');
+  }
   const stamp = now();
   const connection = await db().getConnection();
   try {
     await connection.beginTransaction();
-    await connection.execute('UPDATE items SET summary=?,responsible=?,supplier=?,status=?,due_date=?,attention=?,updated_at=? WHERE id=?', [summary, responsible, supplier, status, dueDate, attention, stamp, old.id]);
+    await connection.execute('UPDATE items SET node_id=?,summary=?,responsible=?,supplier=?,status=?,due_date=?,attention=?,updated_at=? WHERE id=?', [nodeId, summary, responsible, supplier, status, dueDate, attention, stamp, old.id]);
     await connection.execute('INSERT INTO item_updates (id,item_id,source_id,author_id,summary,evidence,previous_status,new_status,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
       [randomUUID(), old.id, null, req.user.id, text(req.body.note, 2000) || 'Atualização manual', '', old.status, status, stamp]);
     await connection.commit();
