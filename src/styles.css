@@ -74,6 +74,9 @@
 .live-synthesis-points li{padding-left:3px;margin:0 0 9px}
 .live-synthesis-points li:last-child{margin-bottom:0}
 .live-synthesis-points li::marker{color:#4b9c6b}
+.live-synthesis-locations{list-style-type:circle;margin:7px 0 2px;padding-left:22px}
+.live-synthesis-locations li{margin:0 0 5px;color:#3b6652}
+.live-synthesis-locations li::marker{color:#70a882}
 .live-topic-synthesis .live-synthesis-placeholder{color:#81998a}
 .live-synthesis-change{border-top:1px solid #d9e9dc;margin-top:12px;padding-top:10px}
 .live-synthesis-change strong{color:#8c641e;font-size:10px}

@@ -164,3 +164,39 @@ test('síntese inclui um ponto para todo assunto mesmo quando a IA deixa algum d
     assert.match(result.summary, /• Disjuntor: Testes em andamento\. \(Situação: em andamento · Responsável: Bruno\)/);
   });
 });
+
+test('síntese separa subestações dentro do assunto e preserva locais de trechos anteriores', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const requests = [];
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    requests.push(request);
+    const bullet = requests.length === 1
+      ? { item_id: 'reatores', text: 'Inspeções em andamento.', locations: [{ name: 'Ourolândia', text: 'Quatro reatores recebidos; inspeção pendente.' }] }
+      : { item_id: 'reatores', text: 'Inspeções em andamento.', locations: [{ name: 'Ibicoara', text: 'Dois reatores em transporte.' }] };
+    const result = { bullets: [bullet], important_change: '', changed_item_id: '', change_before: '', change_after: '' };
+    return { ok: true, json: async () => ({ output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(result) }] }] }) };
+  };
+  try {
+    const result = await summarizeTopicHistory({
+      projectName: 'Teste', topicPath: 'Equipamentos > Reatores',
+      items: [{ id: 'reatores', title: 'Entrega de reatores', location: 'Ourolândia, Ibicoara', updated_at: '2026-10-20T10:00:00Z', status: 'em_andamento', summary: 'Ourolândia: quatro recebidos; Ibicoara: dois em transporte.', responsible: '', supplier: '', due_date: '', attention: 0 }],
+      updates: [
+        { id: '1', item_id: 'reatores', created_at: '2026-10-18T10:00:00Z', summary: `Ourolândia: quatro reatores recebidos. ${'Contexto. '.repeat(1000)}`, evidence: '', new_status: 'em_andamento', source_title: 'Ata' },
+        { id: '2', item_id: 'reatores', created_at: '2026-10-20T10:00:00Z', summary: 'Ibicoara: dois reatores em transporte.', evidence: '', new_status: 'em_andamento', source_title: 'Ata' },
+      ],
+    });
+    assert.ok(requests.length > 1);
+    assert.match(requests[1].input[1].content[0].text, /Ourolândia/);
+    assert.match(result.summary, /^• Entrega de reatores: Inspeções em andamento\. \(Situação: em andamento\)/);
+    assert.match(result.summary, /\n  ◦ Ourolândia: Quatro reatores recebidos; inspeção pendente\./);
+    assert.match(result.summary, /\n  ◦ Ibicoara: Dois reatores em transporte\./);
+    assert.doesNotMatch(result.summary, /Local: Ourolândia, Ibicoara/);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});

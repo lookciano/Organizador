@@ -3,7 +3,7 @@ import { db } from './db.mjs';
 import { structurePaths, summarizeTopicHistory } from './ai.mjs';
 
 const hasModelKey = () => Boolean(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
-const SUMMARY_VERSION = 3;
+const SUMMARY_VERSION = 4;
 const active = new Map();
 let queue = Promise.resolve();
 

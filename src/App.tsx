@@ -216,11 +216,16 @@ function TopicSynthesis({ value, onRetry }: { value?: TopicSummary; onRetry: () 
   const [error, setError] = useState("");
   const updating = ["pending", "processing"].includes(value?.analysis_status || "");
   const unavailable = ["failed", "needs_key"].includes(value?.analysis_status || "");
-  const points = value?.summary?.split(/\r?\n/).map((line) => line.replace(/^[•\-*]\s*/, "").trim()).filter(Boolean) || [];
+  const points: { text: string; locations: string[] }[] = [];
+  for (const line of value?.summary?.split(/\r?\n/) || []) {
+    const location = line.match(/^\s*◦\s+(.+)$/);
+    if (location && points.length) points[points.length - 1].locations.push(location[1].trim());
+    else if (line.trim()) points.push({ text: line.replace(/^\s*[•\-*]\s*/, "").trim(), locations: [] });
+  }
   const bulletSummary = Boolean(value?.summary && /^[•\-*]\s/.test(value.summary));
   return <div className="live-topic-synthesis">
     <div className="live-synthesis-heading"><strong>SÍNTESE DO TÓPICO</strong><small>{updating ? "Atualizando síntese..." : value?.generated_at ? `Gerada em ${dateTime(value.generated_at)}` : ""}</small></div>
-    {value?.summary ? bulletSummary ? <ul className="live-synthesis-points">{points.map((point, index) => <li key={index}>{point}</li>)}</ul> : <p>{value.summary}</p> : <p className="live-synthesis-placeholder">{unavailable ? "Síntese ainda indisponível." : "Analisando o histórico deste tópico..."}</p>}
+    {value?.summary ? bulletSummary ? <ul className="live-synthesis-points">{points.map((point, index) => <li key={index}>{point.text}{point.locations.length > 0 && <ul className="live-synthesis-locations">{point.locations.map((location, locationIndex) => <li key={locationIndex}>{location}</li>)}</ul>}</li>)}</ul> : <p>{value.summary}</p> : <p className="live-synthesis-placeholder">{unavailable ? "Síntese ainda indisponível." : "Analisando o histórico deste tópico..."}</p>}
     {value?.important_change && <div className="live-synthesis-change"><strong>Mudança relevante</strong><p>{value.important_change}</p></div>}
     {unavailable && <div className="live-synthesis-error"><span>Não foi possível atualizar a síntese.</span><button disabled={busy} onClick={async () => { setBusy(true); setError(""); try { await onRetry(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao tentar novamente"); } finally { setBusy(false); } }}>{busy ? "Tentando..." : "Tentar novamente"}</button>{error && <span role="alert">{error}</span>}</div>}
   </div>;
