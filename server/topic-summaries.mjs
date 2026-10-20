@@ -3,6 +3,7 @@ import { db } from './db.mjs';
 import { structurePaths, summarizeTopicHistory } from './ai.mjs';
 
 const hasModelKey = () => Boolean(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
+const SUMMARY_VERSION = 2;
 const active = new Map();
 let queue = Promise.resolve();
 
@@ -24,7 +25,7 @@ function relatedItems(nodes, items) {
 function fingerprint(topicPath, items) {
   const records = items.map((item) => [item.id, item.node_id, item.title, item.summary, item.status, item.responsible, item.supplier, item.due_date, item.attention, item.updated_at, item.update_count || 0]);
   records.sort((a, b) => a[0].localeCompare(b[0]));
-  return createHash('sha256').update(JSON.stringify([topicPath, records])).digest('hex');
+  return createHash('sha256').update(JSON.stringify([SUMMARY_VERSION, topicPath, records])).digest('hex');
 }
 
 async function generate(nodeId, projectId, revision) {
@@ -105,7 +106,7 @@ export async function prepareTopicSummaries(projectId, nodes, items) {
         [node.id, projectId, revision, old?.summary || '', old?.important_change || '', initialStatus]));
     }
     const status = !old || old.revision !== revision || retryWithKey ? initialStatus : old.analysis_status;
-    const current = { node_id: node.id, summary: old?.summary || '', important_change: old?.important_change || '', analysis_status: status, analysis_error: status === 'failed' ? old?.analysis_error : null, generated_at: old?.generated_at || null };
+    const current = { node_id: node.id, summary: old?.summary || '', important_change: status === 'completed' ? old?.important_change || '' : '', analysis_status: status, analysis_error: status === 'failed' ? old?.analysis_error : null, generated_at: old?.generated_at || null };
     result.push(current);
     if (hasModelKey() && ['pending', 'processing'].includes(status)) jobs.push([node.id, projectId, revision]);
   }
