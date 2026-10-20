@@ -224,6 +224,32 @@ function TopicSynthesis({ value, onRetry }: { value?: TopicSummary; onRetry: () 
   </div>;
 }
 
+function TopicQuickUpdate({ projectId, node, onRefresh }: { projectId: string; node: Node; onRefresh: () => Promise<void> }) {
+  const [body, setBody] = useState("");
+  const [sending, setSending] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  return <form className="live-quick-update" onSubmit={async (event) => {
+    event.preventDefault();
+    const note = body.trim();
+    if (!note || sending) return;
+    setSending(true);
+    setMessage("");
+    setError("");
+    try {
+      await post(`/api/projects/${projectId}/nodes/${node.id}/updates`, { body: note });
+      setBody("");
+      setMessage("Informação recebida. Ela aparecerá aqui após a análise.");
+      await onRefresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível enviar a atualização"); }
+    finally { setSending(false); }
+  }}>
+    <div className="live-quick-update-row"><textarea aria-label={`Escrever atualização em ${node.title}`} rows={1} maxLength={180000} value={body} onChange={(event) => { setBody(event.target.value); setMessage(""); setError(""); }} placeholder="Escreva uma atualização deste tópico..." /><button type="submit" disabled={!body.trim() || sending}>{sending ? "Enviando..." : "Adicionar"}</button></div>
+    {message && <small role="status">{message}</small>}{error && <small className="live-quick-update-error" role="alert">{error}</small>}
+  </form>;
+}
+
 function LivingReportView({ project, items, nodes, topicSummaries, syncedAt, onRefresh, onOpen, onCompose }: {
   project: Project;
   items: Item[];
@@ -312,6 +338,7 @@ function LivingReportView({ project, items, nodes, topicSummaries, syncedAt, onR
     return <section className={`live-node live-depth-${Math.min(depth, 2)}`} id={`topico-${node.id}`} key={node.id}>
       <div className="live-node-heading">{depth === 0 && <span className="live-section-number">{String(sectionNumber || 1).padStart(2, "0")}</span>}<div>{title}{depth === 0 && <small>{total} assunto(s) com informação</small>}</div></div>
       {total > 0 && <TopicSynthesis value={synthesis} onRetry={async () => { await post(`/api/projects/${project.id}/topics/${node.id}/summary/retry`, {}); await onRefresh(); }} />}
+      <TopicQuickUpdate projectId={project.id} node={node} onRefresh={onRefresh} />
       {direct.map((item) => topic(item))}
       {!direct.length && !children.length && <p className="live-empty-topic">Sem informação registrada neste tópico.</p>}
       {children.map((child) => renderNode(child, depth + 1))}

@@ -250,14 +250,29 @@ app.patch('/api/projects/:projectId/nodes/:nodeId', requireUser, membership, own
 const allowedMime = new Set(['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'text/markdown', 'image/png', 'image/jpeg', 'image/webp']);
 
 async function processSource(sourceId, projectId) {
-  const [sourceRows] = await db().execute('SELECT s.*,p.name AS project_name FROM sources s JOIN projects p ON p.id=s.project_id WHERE s.id=? AND s.project_id=?', [sourceId, projectId]);
+  const [sourceRows] = await db().execute('SELECT s.*,p.name AS project_name,t.node_id AS target_node_id FROM sources s JOIN projects p ON p.id=s.project_id LEFT JOIN source_targets t ON t.source_id=s.id WHERE s.id=? AND s.project_id=?', [sourceId, projectId]);
   const source = sourceRows[0];
-  const [[nodes], [existingItems]] = await Promise.all([
+  const [[allNodes], [existingItems]] = await Promise.all([
     db().execute('SELECT id,parent_id,title FROM structure_nodes WHERE project_id=? AND archived=0', [projectId]),
-    db().execute('SELECT id,node_id,title,location,status FROM items WHERE project_id=? ORDER BY updated_at DESC LIMIT 100', [projectId]),
+    db().execute(`SELECT id,node_id,title,location,status FROM items WHERE project_id=?${source.target_node_id ? ' AND node_id=?' : ''} ORDER BY updated_at DESC LIMIT 100`, source.target_node_id ? [projectId, source.target_node_id] : [projectId]),
   ]);
+  const nodeById = new Map(allNodes.map((node) => [node.id, node]));
+  const nodes = source.target_node_id ? [] : allNodes;
+  if (source.target_node_id) {
+    let current = nodeById.get(source.target_node_id);
+    const seen = new Set();
+    while (current && !seen.has(current.id)) {
+      nodes.unshift(current);
+      seen.add(current.id);
+      current = nodeById.get(current.parent_id);
+    }
+  }
   try {
-    const extracted = await extractItems({ source: { projectName: source.project_name, title: source.title, body: source.body, fileData: source.file_data, contentType: source.content_type, fileName: source.file_name }, nodes, existingItems });
+    if (source.target_node_id && !nodes.length) throw new Error('O tópico escolhido não está mais disponível');
+    let extracted = await extractItems({ source: { projectName: source.project_name, title: source.title, body: source.body, fileData: source.file_data, contentType: source.content_type, fileName: source.file_name }, nodes, existingItems, preferredNodeId: source.target_node_id });
+    if (source.target_node_id && !extracted.length) {
+      extracted = [{ existingItemId: '', nodeId: source.target_node_id, title: text(source.body.split(/\r?\n/)[0], 120) || `Atualização em ${nodes.at(-1).title}`, summary: text(source.body, 5000), location: '', discipline: '', supplier: '', responsible: '', status: 'informativo', dueDate: '', attention: false, confidence: 0.5, evidence: text(source.body, 2000) }];
+    }
     const connection = await db().getConnection();
     try {
       await connection.beginTransaction();
@@ -344,6 +359,27 @@ app.post('/api/projects/:projectId/sources', requireUser, membership, run(async 
   }
   const analysis = await processSource(id, req.params.projectId);
   res.status(201).json({ id, ...analysis });
+}));
+
+app.post('/api/projects/:projectId/nodes/:nodeId/updates', requireUser, membership, run(async (req, res) => {
+  const body = text(req.body.body, MAX_SOURCE_TEXT + 1);
+  if (!body) return fail(res, 400, 'Escreva a atualização antes de enviar');
+  if (body.length > MAX_SOURCE_TEXT) return fail(res, 400, 'A mensagem é extensa demais. Divida-a em partes menores.');
+  const [nodes] = await db().execute('SELECT id,title FROM structure_nodes WHERE id=? AND project_id=? AND archived=0', [req.params.nodeId, req.params.projectId]);
+  if (!nodes.length) return fail(res, 404, 'Tópico não encontrado');
+  const sourceId = randomUUID();
+  const connection = await db().getConnection();
+  try {
+    await connection.beginTransaction();
+    await connection.execute('INSERT INTO sources (id,project_id,author_id,title,kind,body,analysis_status,created_at) VALUES (?,?,?,?,?,?,?,?)',
+      [sourceId, req.params.projectId, req.user.id, `Atualização: ${nodes[0].title}`.slice(0, 255), 'topic_note', body, 'pending', now()]);
+    await connection.execute('INSERT INTO source_targets (source_id,project_id,node_id) VALUES (?,?,?)',
+      [sourceId, req.params.projectId, req.params.nodeId]);
+    await connection.commit();
+  } catch (error) { await connection.rollback(); throw error; }
+  finally { connection.release(); }
+  void startSourceProcessing(sourceId, req.params.projectId);
+  res.status(202).json({ id: sourceId, status: 'processing' });
 }));
 
 app.post('/api/projects/:projectId/sources/:sourceId/reprocess', requireUser, membership, run(async (req, res) => {

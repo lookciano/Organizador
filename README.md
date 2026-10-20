@@ -48,7 +48,7 @@ npm run build
 npm start
 ```
 
-O servidor escuta `0.0.0.0:${PORT}` e oferece `/health` para verificação. Para editar o frontend com recarga automática, rode `npm run dev` em outro terminal; o Vite encaminha `/api` para a porta 10000.
+O servidor escuta `0.0.0.0:${PORT}` e oferece `/health` para verificação. Para editar o frontend com recarga automática, rode `npm run dev` em outro terminal; o Vite encaminha `/api` para a porta 10000. No Relatório vivo, cada tópico aceita uma atualização escrita diretamente nele. O texto fica registrado como fonte, é analisado para atualizar os assuntos daquele tópico e entra no histórico e na síntese. A Conversa continua disponível para textos e arquivos que abrangem vários tópicos.
 
 ## Limites desta primeira versão
 

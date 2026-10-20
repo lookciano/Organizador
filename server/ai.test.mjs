@@ -57,6 +57,16 @@ test('extração evita atribuir um tópico quando a confiança na categoria é b
   });
 });
 
+test('atualização escrita em um tópico permanece nele mesmo quando a IA sugere outra categoria', async () => {
+  const item = { existing_item_id: 'item-fora', node_id: 'ouro-spcs', node_confidence: 0.95, title: 'Revisão do cubículo', summary: 'Revisão em andamento', location: 'Ourolândia', discipline: '', supplier: '', responsible: '', status: 'em_andamento', due_date: '', attention: false, confidence: 0.9, evidence: 'Revisão em andamento' };
+  await mockAnalysis({ items: [item] }, async (request) => {
+    const result = await extractItems({ source: { projectName: 'Teste', title: 'Atualização', body: 'Revisão em andamento' }, nodes: [nodes[2]], existingItems: [], preferredNodeId: 'ouro-cub' });
+    assert.equal(result[0].nodeId, 'ouro-cub');
+    assert.equal(result[0].existingItemId, '');
+    assert.match(request().input[0].content, /tópico escolhido pelo usuário/);
+  });
+});
+
 test('arquivo de texto longo é analisado em vários trechos sem perder assuntos após o décimo segundo', async () => {
   const fileText = Array.from({ length: 20 }, (_, index) => `[[ITEM ${index + 1}]] Informação sobre o equipamento ${index + 1}. ${'Contexto da reunião. '.repeat(55)}`).join('\n\n');
   assert.ok(splitForAnalysis(fileText).length > 1);

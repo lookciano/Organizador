@@ -85,6 +85,10 @@ const schema = [
     analysis_status VARCHAR(30) NOT NULL, analysis_error TEXT,
     created_at VARCHAR(30) NOT NULL, INDEX (project_id), INDEX (created_at)
   )`,
+  `CREATE TABLE IF NOT EXISTS source_targets (
+    source_id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL,
+    node_id VARCHAR(36) NOT NULL, INDEX (project_id), INDEX (node_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS items (
     id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL,
     node_id VARCHAR(36), title VARCHAR(255) NOT NULL,
