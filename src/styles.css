@@ -113,3 +113,4 @@
 .category-question .button{min-height:38px;white-space:nowrap}
 .category-question small{display:block;color:#a4473c;margin-top:7px}
 @media print{.category-question{display:none!important}}
+.source-state.processing{color:#a97926;background:#fff2da}

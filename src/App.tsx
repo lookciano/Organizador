@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 type User = { id: string; email: string };
 type Project = { id: string; name: string; description: string; role: string; created_at: string };
 type Node = { id: string; parent_id: string | null; title: string; sort_order: number; archived: number };
-type Source = { id: string; title: string; kind: string; body: string; file_name: string | null; analysis_status: string; analysis_error: string | null; author_email: string | null; created_at: string };
+type Source = { id: string; title: string; kind: string; body: string; file_name: string | null; analysis_status: string; analysis_error: string | null; topic_count?: number; author_email: string | null; created_at: string };
 type Item = { id: string; node_id: string | null; title: string; summary: string; location: string; discipline: string; supplier: string; responsible: string; status: string; due_date: string; attention: number; confidence: number; source_title: string | null; latest_update: string | null; latest_update_at: string | null; latest_update_author: string | null; update_count: number; created_at: string; updated_at: string };
 type Member = { id: string; email: string; role: string };
 type Invitation = { id: string; email: string; role: string; expires_at: string; accepted_at: string | null; created_at: string };
@@ -105,6 +105,13 @@ export default function App() {
     document.addEventListener("visibilitychange", updateIfVisible);
     return () => { window.clearInterval(interval); document.removeEventListener("visibilitychange", updateIfVisible); };
   }, [Boolean(state), projectId, inviteToken, refresh]);
+
+  const hasProcessingSource = Boolean(state?.sources?.some((source) => ["pending", "processing"].includes(source.analysis_status)));
+  useEffect(() => {
+    if (!hasProcessingSource || !projectId) return;
+    const interval = window.setInterval(() => { if (!document.hidden) void refresh(projectId); }, 8000);
+    return () => window.clearInterval(interval);
+  }, [hasProcessingSource, projectId, refresh]);
 
   const chooseProject = (id: string) => { setProjectId(id); localStorage.setItem("organizador_project", id); setView("overview"); void refresh(id); };
   const after = async (message = "Alterações salvas") => { await refresh(); setNotice(message); setTimeout(() => setNotice(""), 5000); };
@@ -349,7 +356,7 @@ function SourcesView({ sources, projectId, onRefresh, setError, focusSignal }: {
       const result = await post<{ status: string; extractedCount: number; error?: string }>(`/api/projects/${projectId}/sources`, {
         title, body: message, fileName: attachment?.name, contentType: attachment?.type || fallbackMime[extension] || "", fileData,
       });
-      await onRefresh(result.status === "completed" ? `Informação analisada · ${result.extractedCount} assunto(s) identificado(s)` : "Informação registrada");
+      await onRefresh(result.status === "completed" ? `Informação analisada · ${result.extractedCount} atualização(ões) identificada(s)` : result.status === "processing" ? "Arquivo recebido. A análise dos tópicos está em andamento." : "Informação registrada");
       if (result.status !== "completed" && result.error) setError(result.error);
     } catch (cause) {
       setBody(message);
@@ -371,7 +378,7 @@ function SourcesView({ sources, projectId, onRefresh, setError, focusSignal }: {
         return <article className="chat-message" key={source.id}>
           <span className="chat-avatar">{source.kind === "file" ? "▧" : "≡"}</span>
           <div className="chat-bubble">
-            <div className="chat-meta"><strong className="chat-author">{source.author_email || "Participante"}</strong><time>{date(source.created_at)}</time><span className={`source-state ${source.analysis_status}`}>{source.analysis_status === "completed" ? "Analisado" : source.analysis_status === "needs_key" ? "IA pendente" : source.analysis_status === "failed" ? "Falha na análise" : source.analysis_status === "manual" ? "Manual" : "Analisando"}</span></div>
+            <div className="chat-meta"><strong className="chat-author">{source.author_email || "Participante"}</strong><time>{date(source.created_at)}</time><span className={`source-state ${source.analysis_status}`}>{source.analysis_status === "completed" ? `Analisado · ${source.topic_count || 0} assunto(s)` : source.analysis_status === "needs_key" ? "IA pendente" : source.analysis_status === "failed" ? "Falha na análise" : source.analysis_status === "manual" ? "Manual" : "Analisando"}</span></div>
             {(!source.body || !source.body.startsWith(source.title)) && <strong className="chat-title">{source.title}</strong>}
             {source.body && <p className="chat-body">{longBody && !isExpanded ? `${source.body.slice(0, 1800)}…` : source.body}</p>}
             {longBody && <button className="chat-link" onClick={() => setExpanded((current) => isExpanded ? current.filter((id) => id !== source.id) : [...current, source.id])}>{isExpanded ? "Mostrar menos" : "Ler mensagem completa"}</button>}

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { db, createProject, initializeDatabase } from './db.mjs';
 import { classifyNode, extractItems } from './ai.mjs';
+import { MAX_SOURCE_TEXT } from './file-text.mjs';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -132,6 +133,13 @@ app.get('/api/state', requireUser, run(async (req, res) => {
       }
     }
   }
+  if (sources.length) {
+    const sourceIds = sources.map((source) => source.id);
+    const placeholders = sourceIds.map(() => '?').join(',');
+    const [counts] = await db().execute(`SELECT source_id,COUNT(DISTINCT item_id) AS topic_count FROM item_updates WHERE source_id IN (${placeholders}) GROUP BY source_id`, sourceIds);
+    const bySource = new Map(counts.map((row) => [row.source_id, Number(row.topic_count)]));
+    for (const source of sources) source.topic_count = bySource.get(source.id) || 0;
+  }
   res.json({ user: req.user, projects, project, nodes, sources, items, members, invitations });
 }));
 
@@ -242,9 +250,12 @@ async function processSource(sourceId, projectId) {
     const connection = await db().getConnection();
     try {
       await connection.beginTransaction();
+      const createdByKey = new Map();
+      const normalized = (value) => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
       for (const entry of extracted) {
         const stamp = now();
-        let itemId = entry.existingItemId;
+        const key = [entry.nodeId || '', normalized(entry.title), normalized(entry.location), normalized(entry.discipline)].join('|');
+        let itemId = entry.existingItemId || createdByKey.get(key);
         let previousStatus = null;
         if (itemId) {
           const [oldRows] = await connection.execute('SELECT * FROM items WHERE id=? AND project_id=?', [itemId, projectId]);
@@ -261,6 +272,7 @@ async function processSource(sourceId, projectId) {
           await connection.execute(`INSERT INTO items (id,project_id,node_id,title,summary,location,discipline,supplier,responsible,status,due_date,attention,confidence,latest_source_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
             [itemId, projectId, entry.nodeId, entry.title, entry.summary, entry.location, entry.discipline, entry.supplier, entry.responsible, entry.status, entry.dueDate, Number(entry.attention), entry.confidence, sourceId, stamp, stamp]);
         }
+        createdByKey.set(key, itemId);
         await connection.execute('INSERT INTO item_updates (id,item_id,source_id,author_id,summary,evidence,previous_status,new_status,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
           [randomUUID(), itemId, sourceId, source.author_id, entry.summary, entry.evidence, previousStatus, entry.status, stamp]);
       }
@@ -276,9 +288,30 @@ async function processSource(sourceId, projectId) {
   }
 }
 
+const activeSources = new Map();
+let sourceQueue = Promise.resolve();
+
+function startSourceProcessing(sourceId, projectId) {
+  if (activeSources.has(sourceId)) return activeSources.get(sourceId);
+  const task = sourceQueue.then(async () => {
+    await db().execute('UPDATE sources SET analysis_status=?,analysis_error=NULL WHERE id=? AND project_id=?', ['processing', sourceId, projectId]);
+    return processSource(sourceId, projectId);
+  }).catch(async (error) => {
+    console.error('Falha no processamento da fonte:', error);
+    try {
+      await db().execute('UPDATE sources SET analysis_status=?,analysis_error=? WHERE id=? AND project_id=?', ['failed', String(error.message || error).slice(0, 1000), sourceId, projectId]);
+    } catch (databaseError) { console.error('Falha ao registrar erro da fonte:', databaseError); }
+    return { status: 'failed', extractedCount: 0 };
+  }).finally(() => activeSources.delete(sourceId));
+  activeSources.set(sourceId, task);
+  sourceQueue = task.then(() => undefined);
+  return task;
+}
+
 app.post('/api/projects/:projectId/sources', requireUser, membership, run(async (req, res) => {
   const title = text(req.body.title, 255) || 'Nova informação';
-  const body = text(req.body.body, 60000);
+  const body = text(req.body.body, MAX_SOURCE_TEXT + 1);
+  if (body.length > MAX_SOURCE_TEXT) return fail(res, 400, 'A mensagem é extensa demais. Divida-a em partes menores.');
   let fileData = null;
   let contentType = null;
   let fileName = null;
@@ -293,6 +326,10 @@ app.post('/api/projects/:projectId/sources', requireUser, membership, run(async 
   const id = randomUUID();
   await db().execute('INSERT INTO sources (id,project_id,author_id,title,kind,body,file_name,content_type,file_data,analysis_status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
     [id, req.params.projectId, req.user.id, title, fileData ? 'file' : 'text', body, fileName, contentType, fileData, 'pending', now()]);
+  if (fileData) {
+    void startSourceProcessing(id, req.params.projectId);
+    return res.status(202).json({ id, status: 'processing', extractedCount: 0 });
+  }
   const analysis = await processSource(id, req.params.projectId);
   res.status(201).json({ id, ...analysis });
 }));
@@ -301,7 +338,9 @@ app.post('/api/projects/:projectId/sources/:sourceId/reprocess', requireUser, me
   const [rows] = await db().execute('SELECT id,analysis_status FROM sources WHERE id=? AND project_id=?', [req.params.sourceId, req.params.projectId]);
   if (!rows.length) return fail(res, 404, 'Fonte não encontrada');
   if (rows[0].analysis_status === 'completed') return fail(res, 409, 'Esta fonte já foi analisada');
-  res.json(await processSource(req.params.sourceId, req.params.projectId));
+  if (activeSources.has(req.params.sourceId)) return res.json({ status: 'processing' });
+  void startSourceProcessing(req.params.sourceId, req.params.projectId);
+  res.json({ status: 'processing' });
 }));
 
 app.get('/api/projects/:projectId/sources/:sourceId/file', requireUser, membership, run(async (req, res) => {
@@ -440,5 +479,7 @@ app.use((error, _req, res, _next) => {
 });
 
 await initializeDatabase();
+const [unfinishedSources] = await db().execute("SELECT id,project_id FROM sources WHERE analysis_status IN ('pending','processing') ORDER BY created_at");
+for (const source of unfinishedSources) void startSourceProcessing(source.id, source.project_id);
 const port = Number(process.env.PORT || 10000);
 app.listen(port, '0.0.0.0', () => console.log(`Organizador disponível na porta ${port}`));
