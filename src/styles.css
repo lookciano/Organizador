@@ -70,6 +70,10 @@
 .live-synthesis-heading strong{color:#3b7657;font-size:10px;letter-spacing:.08em}
 .live-synthesis-heading small{color:#819b88;font-size:10px}
 .live-topic-synthesis>p{white-space:pre-wrap;color:#315642;font-size:13px;line-height:1.68;margin:9px 0 0}
+.live-synthesis-points{color:#315642;font-size:13px;line-height:1.65;margin:10px 0 0;padding-left:20px}
+.live-synthesis-points li{padding-left:3px;margin:0 0 9px}
+.live-synthesis-points li:last-child{margin-bottom:0}
+.live-synthesis-points li::marker{color:#4b9c6b}
 .live-topic-synthesis .live-synthesis-placeholder{color:#81998a}
 .live-synthesis-change{border-top:1px solid #d9e9dc;margin-top:12px;padding-top:10px}
 .live-synthesis-change strong{color:#8c641e;font-size:10px}

@@ -107,14 +107,17 @@ test('síntese do tópico percorre todo o histórico e mantém uma mudança suti
     const request = JSON.parse(options.body);
     requests.push(request);
     const result = requests.length === 1
-      ? { summary: 'Revisão em andamento.', important_change: '', changed_item_id: '', change_before: '', change_after: '' }
-      : { summary: 'Revisão em andamento; o prazo mudou para 22/10.', important_change: 'Prazo alterado de 20/10 para 22/10.', changed_item_id: 'a', change_before: 'Prazo era 20/10.', change_after: 'O prazo mudou para 22/10.' };
+      ? { bullets: [{ item_id: 'a', text: 'Revisão em andamento.' }, { item_id: 'b', text: 'Inspeção continua pendente.' }], important_change: '', changed_item_id: '', change_before: '', change_after: '' }
+      : { bullets: [{ item_id: 'a', text: 'Revisão em andamento; o prazo mudou para 22/10.' }], important_change: 'Prazo alterado de 20/10 para 22/10.', changed_item_id: 'a', change_before: 'Prazo era 20/10.', change_after: 'O prazo mudou para 22/10.' };
     return { ok: true, json: async () => ({ output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(result) }] }] }) };
   };
   try {
     const result = await summarizeTopicHistory({
       projectName: 'Teste', topicPath: 'Equipamentos > Cubículos',
-      items: [{ id: 'a', title: 'Cubículo', updated_at: '2026-10-22T10:00:00Z', status: 'em_andamento', summary: 'Prazo 22/10', responsible: '', supplier: '', due_date: '2026-10-22', attention: 0 }],
+      items: [
+        { id: 'a', title: 'Cubículo', updated_at: '2026-10-22T10:00:00Z', status: 'em_andamento', summary: 'Prazo 22/10', responsible: '', supplier: '', due_date: '2026-10-22', attention: 0 },
+        { id: 'b', title: 'Inspeção', updated_at: '2026-10-22T10:00:00Z', status: 'pendente', summary: 'Aguardando equipe.', responsible: '', supplier: '', due_date: '', attention: 0 },
+      ],
       updates: [
         { id: '0', item_id: 'a', created_at: '2026-10-19T10:00:00Z', summary: `Prazo era 20/10. ${'Contexto anterior. '.repeat(330)}`, evidence: '', new_status: 'pendente', source_title: 'Ata 0' },
         { id: '1', item_id: 'a', created_at: '2026-10-20T10:00:00Z', summary: `Revisão em andamento. ${'Contexto repetido. '.repeat(330)}`, evidence: '', new_status: 'em_andamento', source_title: 'Ata 1' },
@@ -126,6 +129,8 @@ test('síntese do tópico percorre todo o histórico e mantém uma mudança suti
     assert.ok(requests.some((request) => request.input[1].content[0].text.includes('O prazo mudou para 22/10.')));
     assert.ok(requests.some((request) => request.input[1].content[0].text.includes('Mesma informação repetida 2 vezes')));
     assert.ok(requests[1].input[1].content[0].text.includes('Revisão em andamento.'));
+    assert.match(result.summary, /^• Cubículo: Revisão em andamento; o prazo mudou para 22\/10\. \(Situação: em andamento · Prazo: 2026-10-22\)/);
+    assert.match(result.summary, /• Inspeção: Inspeção continua pendente\. \(Situação: pendente\)$/);
     assert.equal(result.importantChange, 'Prazo alterado de 20/10 para 22/10.');
   } finally {
     globalThis.fetch = oldFetch;
@@ -135,12 +140,27 @@ test('síntese do tópico percorre todo o histórico e mantém uma mudança suti
 });
 
 test('não destaca uma suposta mudança sem registros anteriores e posteriores comprováveis', async () => {
-  await mockAnalysis({ summary: 'Entrega prevista para 29/09.', important_change: 'Prazo confirmado em 29/09.', changed_item_id: 'a', change_before: 'Prazo era 28/09.', change_after: 'Entrega prevista para 29/09.' }, async () => {
+  await mockAnalysis({ bullets: [{ item_id: 'a', text: 'Entrega prevista para 29/09.' }], important_change: 'Prazo confirmado em 29/09.', changed_item_id: 'a', change_before: 'Prazo era 28/09.', change_after: 'Entrega prevista para 29/09.' }, async () => {
     const result = await summarizeTopicHistory({
       projectName: 'Teste', topicPath: 'Equipamentos > Reatores',
       items: [{ id: 'a', title: 'Reator', updated_at: '2026-10-20T10:00:00Z', status: 'pendente', summary: 'Entrega prevista para 29/09.', responsible: '', supplier: '', due_date: '', attention: 0 }],
       updates: [{ id: '1', item_id: 'a', created_at: '2026-10-20T10:00:00Z', summary: 'Entrega prevista para 29/09.', evidence: '', new_status: 'pendente', source_title: 'Ata' }],
     });
     assert.equal(result.importantChange, '');
+  });
+});
+
+test('síntese inclui um ponto para todo assunto mesmo quando a IA deixa algum de fora', async () => {
+  await mockAnalysis({ bullets: [{ item_id: 'a', text: 'Entrega do equipamento ainda pendente.' }], important_change: '', changed_item_id: '', change_before: '', change_after: '' }, async () => {
+    const result = await summarizeTopicHistory({
+      projectName: 'Teste', topicPath: 'Equipamentos',
+      items: [
+        { id: 'a', title: 'Reator', updated_at: '2026-10-20T10:00:00Z', status: 'pendente', summary: 'Entrega em análise.', responsible: 'Ana', supplier: 'Fornecedor A', due_date: '2026-10-25', attention: 1 },
+        { id: 'b', title: 'Disjuntor', updated_at: '2026-10-20T10:00:00Z', status: 'em_andamento', summary: 'Testes em andamento.', responsible: 'Bruno', supplier: '', due_date: '', attention: 0 },
+      ], updates: [],
+    });
+    assert.equal(result.summary.split('\n').length, 2);
+    assert.match(result.summary, /• Reator: Entrega do equipamento ainda pendente\. \(Situação: pendente · Responsável: Ana · Fornecedor: Fornecedor A · Prazo: 2026-10-25 · Ponto de atenção\)/);
+    assert.match(result.summary, /• Disjuntor: Testes em andamento\. \(Situação: em andamento · Responsável: Bruno\)/);
   });
 });
