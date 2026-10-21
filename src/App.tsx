@@ -270,6 +270,9 @@ function LivingReportView({ project, items, nodes, topicSummaries, syncedAt, onR
   const [itemHistory, setItemHistory] = useState<Record<string, HistoryEntry[]>>({});
   const [historyError, setHistoryError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [expandedHistoryNodes, setExpandedHistoryNodes] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => { setExpandedHistoryNodes(new Set()); }, [project.id]);
 
   useEffect(() => {
     let active = true;
@@ -308,6 +311,19 @@ function LivingReportView({ project, items, nodes, topicSummaries, syncedAt, onR
   const summaryByNode = new Map(topicSummaries.map((summary) => [summary.node_id, summary]));
   const roots = childrenByParent.get(null) || [];
   const countUnder = (id: string): number => (itemsByNode.get(id)?.length || 0) + (childrenByParent.get(id) || []).reduce((total, child) => total + countUnder(child.id), 0);
+  const historyNodesUnder = (id: string): string[] => [
+    ...((itemsByNode.get(id)?.length || 0) > 0 ? [id] : []),
+    ...(childrenByParent.get(id) || []).flatMap((child) => historyNodesUnder(child.id)),
+  ];
+  const toggleHistory = (id: string) => {
+    const ids = historyNodesUnder(id);
+    setExpandedHistoryNodes((current) => {
+      const next = new Set(current);
+      const allExpanded = ids.every((nodeId) => next.has(nodeId));
+      for (const nodeId of ids) if (allExpanded) next.delete(nodeId); else next.add(nodeId);
+      return next;
+    });
+  };
   const openCount = items.filter((item) => item.status !== "concluido" && item.status !== "informativo").length;
   const attentionCount = items.filter((item) => item.attention || item.status === "bloqueado").length;
   const overdueCount = items.filter(isOverdue).length;
@@ -340,13 +356,15 @@ function LivingReportView({ project, items, nodes, topicSummaries, syncedAt, onR
     const direct = itemsByNode.get(node.id) || [];
     const children = childrenByParent.get(node.id) || [];
     const total = countUnder(node.id);
+    const historyOpen = total > 0 && historyNodesUnder(node.id).every((id) => expandedHistoryNodes.has(id));
     const title = depth === 0 ? <h2>{node.title}</h2> : depth === 1 ? <h3>{node.title}</h3> : <h4>{node.title}</h4>;
     const synthesis = summaryByNode.get(node.id);
     return <section className={`live-node live-depth-${Math.min(depth, 2)}`} id={`topico-${node.id}`} key={node.id}>
       <div className="live-node-heading">{depth === 0 && <span className="live-section-number">{String(sectionNumber || 1).padStart(2, "0")}</span>}<div>{title}{depth === 0 && <small>{total} assunto(s) com informação</small>}</div></div>
       {total > 0 && <TopicSynthesis value={synthesis} onRetry={async () => { await post(`/api/projects/${project.id}/topics/${node.id}/summary/retry`, {}); await onRefresh(); }} />}
       <TopicQuickUpdate projectId={project.id} node={node} onRefresh={onRefresh} />
-      {direct.map((item) => topic(item))}
+      {total > 0 && <button type="button" className="live-history-toggle" aria-expanded={historyOpen} aria-label={`${historyOpen ? "Ocultar" : "Ver"} histórico e fontes de ${node.title}`} onClick={() => toggleHistory(node.id)}><span aria-hidden="true">{historyOpen ? "⌃" : "⌄"}</span>{historyOpen ? "Ocultar histórico e fontes" : "Ver histórico e fontes"}<small>{total} assunto(s)</small></button>}
+      {expandedHistoryNodes.has(node.id) && direct.map((item) => topic(item))}
       {!direct.length && !children.length && <p className="live-empty-topic">Sem informação registrada neste tópico.</p>}
       {children.map((child) => renderNode(child, depth + 1))}
     </section>;

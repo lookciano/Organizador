@@ -7,12 +7,12 @@ Aplicação web para reunir informações de projetos, acompanhar assuntos e ger
 ## O que o MVP faz
 
 - Cria projetos com estrutura inicial ou em branco.
-- Abre diretamente no relatório vivo do projeto: uma página contínua com todas as seções e subtópicos da estrutura, inclusive os ainda sem registro. Cada assunto mostra situação, contexto, última atualização e histórico completo; o sumário serve apenas para navegar pela página.
+- Abre diretamente no relatório vivo do projeto: uma página contínua com todas as seções e subtópicos da estrutura, inclusive os ainda sem registro. As sínteses ficam visíveis; cada seção oferece um botão discreto para mostrar ou ocultar os registros e fontes que a sustentam. O sumário serve para navegar pela página.
 - Atualiza o relatório automaticamente a cada minuto enquanto a página está visível, com opção de atualizar na hora e imprimir ou salvar em PDF.
 - Permite adicionar, renomear e arquivar categorias sem apagar assuntos já registrados.
 - Recebe mensagens, transcrições, PDF, DOCX, TXT, Markdown e imagens PNG/JPEG/WebP de até 5 MB em uma conversa do projeto. Basta escrever ou anexar e enviar; o título é criado automaticamente. Arquivos de texto são lidos em partes para que um único documento possa atualizar vários assuntos em tópicos diferentes.
 - Usa a API do OpenRouter para extrair assuntos, prazos, responsáveis, fornecedores e evidências. A classificação considera o caminho completo de cada tópico, inclusive quando um mesmo local aparece em diferentes ramos. A API da OpenAI continua disponível como alternativa.
-- Mantém fonte original e histórico por assunto. O relatório vivo mostra a última atualização, sua data e todo o histórico anterior.
+- Mantém fonte original e histórico por assunto. Ao abrir o histórico de uma seção, o relatório mostra a última atualização, sua data e todos os registros anteriores dos assuntos daquela seção e de seus subtópicos.
 - Cada tópico com informações recebe uma síntese em pontos da IA baseada no histórico completo daquele tópico e de suas subseções. Há um ponto por assunto, com situação, responsáveis, fornecedores, prazos e pendências relevantes. Uma mudança comprovada pode ser destacada à parte, sem tratar repetições como novidade. A síntese é atualizada após novos registros, alterações manuais e mudanças na estrutura; o histórico permanece acessível para conferência.
 - Mostra o andamento da análise do anexo e quantos assuntos foram atualizados; documentos pendentes voltam à fila após uma reinicialização do serviço.
 - Classifica registros manuais automaticamente quando o tópico fica em branco. Assuntos cuja categoria é duvidosa aparecem no relatório com uma pergunta simples para confirmação; também é possível tentar a classificação com IA novamente ou corrigir o tópico de um assunto já classificado.
