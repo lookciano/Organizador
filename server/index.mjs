@@ -171,10 +171,23 @@ app.post('/api/projects/:projectId/invitations', requireUser, membership, ownerO
   const [members] = await db().execute('SELECT u.id FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND u.email=?', [req.params.projectId, email]);
   if (members.length) return fail(res, 409, 'Esta pessoa já participa do projeto');
   const token = randomBytes(32).toString('hex');
-  const id = randomUUID();
+  const [pending] = await db().execute('SELECT id FROM invitations WHERE project_id=? AND email=? AND accepted_at IS NULL ORDER BY created_at DESC LIMIT 1', [req.params.projectId, email]);
+  const id = pending[0]?.id || randomUUID();
   const expires = new Date(Date.now() + 7 * 86400000).toISOString();
-  await db().execute('INSERT INTO invitations (id,project_id,email,role,token_hash,invited_by,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?)',
-    [id, req.params.projectId, email, 'member', hash(token), req.user.id, expires, now()]);
+  const connection = await db().getConnection();
+  try {
+    await connection.beginTransaction();
+    if (pending.length) {
+      const [updated] = await connection.execute('UPDATE invitations SET token_hash=?,invited_by=?,expires_at=?,created_at=? WHERE id=? AND project_id=? AND accepted_at IS NULL',
+        [hash(token), req.user.id, expires, now(), id, req.params.projectId]);
+      if (!updated.affectedRows) { const error = new Error('O convite mudou. Tente novamente.'); error.status = 409; throw error; }
+    }
+    else await connection.execute('INSERT INTO invitations (id,project_id,email,role,token_hash,invited_by,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?)',
+      [id, req.params.projectId, email, 'member', hash(token), req.user.id, expires, now()]);
+    await connection.execute('DELETE FROM invitations WHERE project_id=? AND email=? AND accepted_at IS NULL AND id<>?', [req.params.projectId, email, id]);
+    await connection.commit();
+  } catch (error) { await connection.rollback(); throw error; }
+  finally { connection.release(); }
   const origin = process.env.APP_ORIGIN || `${req.protocol}://${req.get('host')}`;
   const inviteUrl = `${origin}/?convite=${encodeURIComponent(token)}`;
   let emailed = false;
@@ -188,7 +201,25 @@ app.post('/api/projects/:projectId/invitations', requireUser, membership, ownerO
       console.error('Falha ao enviar convite:', error.message);
     }
   }
-  res.status(201).json({ id, emailed, inviteUrl: emailed ? undefined : inviteUrl });
+  res.status(201).json({ id, emailed, renewed: Boolean(pending.length), inviteUrl: emailed ? undefined : inviteUrl });
+}));
+
+app.post('/api/projects/:projectId/invitations/:invitationId/link', requireUser, membership, ownerOnly, run(async (req, res) => {
+  const [rows] = await db().execute('SELECT id,email FROM invitations WHERE id=? AND project_id=? AND accepted_at IS NULL', [req.params.invitationId, req.params.projectId]);
+  if (!rows.length) return fail(res, 404, 'Convite pendente não encontrado');
+  const token = randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + 7 * 86400000).toISOString();
+  const [updated] = await db().execute('UPDATE invitations SET token_hash=?,expires_at=?,created_at=?,invited_by=? WHERE id=? AND project_id=? AND accepted_at IS NULL',
+    [hash(token), expiresAt, now(), req.user.id, req.params.invitationId, req.params.projectId]);
+  if (!updated.affectedRows) return fail(res, 409, 'O convite já foi aceito ou cancelado. Atualize a lista.');
+  const origin = process.env.APP_ORIGIN || `${req.protocol}://${req.get('host')}`;
+  res.json({ email: rows[0].email, inviteUrl: `${origin}/?convite=${encodeURIComponent(token)}`, expiresAt });
+}));
+
+app.delete('/api/projects/:projectId/invitations/:invitationId', requireUser, membership, ownerOnly, run(async (req, res) => {
+  const [result] = await db().execute('DELETE FROM invitations WHERE id=? AND project_id=? AND accepted_at IS NULL', [req.params.invitationId, req.params.projectId]);
+  if (!result.affectedRows) return fail(res, 404, 'Convite pendente não encontrado');
+  res.json({ ok: true });
 }));
 
 app.get('/api/invitations/:token', run(async (req, res) => {

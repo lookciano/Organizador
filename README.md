@@ -19,7 +19,7 @@ Aplicação web para reunir informações de projetos, acompanhar assuntos e ger
 - A tela **Organizar** permite revisar todos os assuntos ou somente os extraídos de uma mensagem/arquivo. Mostra os trechos que originaram cada assunto, permite corrigir títulos e tópicos em sequência e aplicar um tópico a vários itens selecionados antes de salvar. A Conversa oferece um atalho de revisão em cada fonte analisada.
 - Títulos e tópicos corrigidos manualmente ficam protegidos contra mudanças de classificação em importações posteriores do mesmo assunto. O histórico da fonte é mantido e as sínteses dos tópicos são atualizadas após a correção.
 - Permite atualizar assuntos manualmente e imprimir relatórios.
-- Convida participantes por e-mail para um projeto específico. A entrega automática usa SMTP; sem SMTP, a interface disponibiliza um link de convite para o administrador enviar manualmente.
+- O responsável pelo projeto adiciona usuários em **Usuários**: informa o e-mail, copia o link de convite e o compartilha diretamente com a pessoa. Convites pendentes podem receber um novo link ou ser cancelados. O link anterior é invalidado ao renovar. Se SMTP estiver configurado, o convite inicial também pode ser enviado automaticamente por e-mail.
 
 ## Arquitetura
 

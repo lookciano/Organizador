@@ -47,7 +47,7 @@ const views: { id: View; label: string; icon: string }[] = [
   { id: "organize", label: "Organizar", icon: "✎" },
   { id: "sources", label: "Conversa", icon: "▧" },
   { id: "structure", label: "Estrutura", icon: "⌘" },
-  { id: "people", label: "Pessoas", icon: "♙" },
+  { id: "people", label: "Usuários", icon: "♙" },
   { id: "reports", label: "Matrizes e PDF", icon: "▣" },
 ];
 
@@ -576,8 +576,61 @@ function StructureView({ nodes, projectId, owner, onRefresh, setError }: { nodes
 }
 
 function PeopleView({ members, invitations, projectId, owner, onRefresh, setError }: { members: Member[]; invitations: Invitation[]; projectId: string; owner: boolean; onRefresh: (message?: string) => Promise<void>; setError: (value: string) => void }) {
-  const [email, setEmail] = useState(""); const [busy, setBusy] = useState(false); const [inviteLink, setInviteLink] = useState("");
-  return <><div className="page-heading"><div><div className="eyebrow">ACESSO POR PROJETO</div><h1>Pessoas</h1><p>Convide participantes por e-mail e acompanhe quem já tem acesso.</p></div></div>{owner && <form className="panel invite-form" onSubmit={async (event) => { event.preventDefault(); setBusy(true); setInviteLink(""); try { const result = await post<{ emailed: boolean; inviteUrl?: string }>(`/api/projects/${projectId}/invitations`, { email }); setEmail(""); setInviteLink(result.inviteUrl || ""); await onRefresh(result.emailed ? "Convite enviado por e-mail" : "Convite criado. Configure SMTP para envio automático."); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao convidar"); } finally { setBusy(false); } }}><div><h2>Convidar colaborador</h2><p>O convite expira em sete dias e concede acesso somente a este projeto.</p></div><div className="invite-controls"><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="nome@empresa.com" required /><button className="button primary" disabled={busy}>{busy ? "Enviando..." : "Enviar convite"}</button></div>{inviteLink && <div className="invite-link"><strong>Envio automático indisponível. Compartilhe este link com o destinatário:</strong><code>{inviteLink}</code><button type="button" onClick={() => void navigator.clipboard.writeText(inviteLink)}>Copiar link</button></div>}</form>}<div className="panel members-panel"><div className="panel-head"><div><h2>Participantes</h2><p>{members.length} pessoa(s) com acesso</p></div></div>{members.map((member) => <div className="member-row" key={member.id}><span className="avatar">{member.email.charAt(0).toUpperCase()}</span><div><strong>{member.email}</strong><small>{member.role === "owner" ? "Responsável pelo projeto" : "Colaborador"}</small></div><span className="member-active">Ativo</span></div>)}</div>{!!invitations.filter((entry) => !entry.accepted_at).length && <div className="panel members-panel"><div className="panel-head"><div><h2>Convites pendentes</h2><p>Até a pessoa aceitar o convite</p></div></div>{invitations.filter((entry) => !entry.accepted_at).map((entry) => <div className="member-row" key={entry.id}><span className="avatar muted">✉</span><div><strong>{entry.email}</strong><small>Expira em {date(entry.expires_at)}</small></div><span className="source-state pending">Pendente</span></div>)}</div>}</>;
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [actingId, setActingId] = useState("");
+  const [link, setLink] = useState<{ email: string; url: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+  const pending = invitations.filter((entry) => !entry.accepted_at);
+
+  const copyLink = async () => {
+    if (!link) return;
+    try { await navigator.clipboard.writeText(link.url); setCopied(true); }
+    catch { setError("Não foi possível copiar automaticamente. Selecione o link no campo e copie manualmente."); }
+  };
+  const renew = async (entry: Invitation) => {
+    setActingId(entry.id); setCopied(false);
+    try {
+      const result = await post<{ inviteUrl: string; email: string }>(`/api/projects/${projectId}/invitations/${entry.id}/link`, {});
+      setLink({ email: result.email, url: result.inviteUrl });
+      await onRefresh(`Novo link criado para ${entry.email}. O link anterior deixou de funcionar.`);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao renovar o convite"); }
+    finally { setActingId(""); }
+  };
+  const cancel = async (entry: Invitation) => {
+    if (!window.confirm(`Cancelar o convite de ${entry.email}? O link deixará de funcionar.`)) return;
+    setActingId(entry.id);
+    try {
+      await post(`/api/projects/${projectId}/invitations/${entry.id}`, {}, "DELETE");
+      if (link?.email === entry.email) setLink(null);
+      await onRefresh(`Convite de ${entry.email} cancelado`);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao cancelar o convite"); }
+    finally { setActingId(""); }
+  };
+
+  return <>
+    <div className="page-heading"><div><div className="eyebrow">ACESSO POR PROJETO</div><h1>Usuários</h1><p>Adicione pessoas ao projeto por convite e veja quem já tem acesso.</p></div></div>
+    {owner && <form className="panel invite-form" onSubmit={async (event) => {
+      event.preventDefault(); setBusy(true); setCopied(false);
+      try {
+        const invitedEmail = email.trim().toLowerCase();
+        const result = await post<{ emailed: boolean; inviteUrl?: string; renewed: boolean }>(`/api/projects/${projectId}/invitations`, { email: invitedEmail });
+        setEmail("");
+        setLink(result.inviteUrl ? { email: invitedEmail, url: result.inviteUrl } : null);
+        await onRefresh(result.emailed ? `Convite enviado para ${invitedEmail}` : `Convite criado para ${invitedEmail}. Copie o link abaixo e envie à pessoa.`);
+      } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao criar convite"); }
+      finally { setBusy(false); }
+    }}>
+      <div><h2>Adicionar novo usuário</h2><p>Informe o e-mail da pessoa. Ela receberá acesso a este projeto ao abrir o convite e criar sua senha. O link vale por sete dias.</p></div>
+      <div className="invite-controls"><label className="sr-only" htmlFor="new-user-email">E-mail do novo usuário</label><input id="new-user-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="nome@empresa.com" required /><button className="button primary" disabled={busy}>{busy ? "Criando..." : "Criar convite"}</button></div>
+      {link && <div className="invite-link" role="status"><strong>Link para {link.email}</strong><p>Copie e envie diretamente à pessoa convidada. Quem tiver este link poderá aceitar o convite; compartilhe-o com cuidado.</p><div className="invite-link-controls"><input value={link.url} readOnly onFocus={(event) => event.currentTarget.select()} aria-label="Link de convite" /><button className="button secondary" type="button" onClick={() => void copyLink()}>{copied ? "Copiado ✓" : "Copiar link"}</button></div></div>}
+    </form>}
+    <div className="panel members-panel"><div className="panel-head"><div><h2>Usuários com acesso</h2><p>{members.length} pessoa(s) no projeto</p></div></div>{members.map((member) => <div className="member-row" key={member.id}><span className="avatar">{member.email.charAt(0).toUpperCase()}</span><div><strong>{member.email}</strong><small>{member.role === "owner" ? "Responsável pelo projeto" : "Colaborador"}</small></div><span className="member-active">Ativo</span></div>)}</div>
+    {!!pending.length && <div className="panel members-panel"><div className="panel-head"><div><h2>Convites pendentes</h2><p>Renove um link perdido ou vencido sem digitar o e-mail novamente.</p></div></div>{pending.map((entry) => {
+      const expired = new Date(entry.expires_at) < new Date();
+      return <div className="member-row invite-pending-row" key={entry.id}><span className="avatar muted">✉</span><div><strong>{entry.email}</strong><small>{expired ? "Link expirado" : `Válido até ${date(entry.expires_at)}`}</small></div><span className={`source-state ${expired ? "failed" : "pending"}`}>{expired ? "Expirado" : "Pendente"}</span>{owner && <div className="invite-pending-actions"><button type="button" disabled={!!actingId} onClick={() => void renew(entry)}>{actingId === entry.id ? "Gerando..." : "Novo link"}</button><button type="button" disabled={!!actingId} onClick={() => void cancel(entry)}>Cancelar</button></div>}</div>;
+    })}</div>}
+  </>;
 }
 
 function ReportsView({ items, nodes, project }: { items: Item[]; nodes: Node[]; project: Project }) {
