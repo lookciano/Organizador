@@ -6,13 +6,14 @@ type Project = { id: string; name: string; description: string; role: string; cr
 type Node = { id: string; parent_id: string | null; title: string; sort_order: number; archived: number };
 type Source = { id: string; title: string; kind: string; body: string; file_name: string | null; analysis_status: string; analysis_error: string | null; topic_count?: number; author_email: string | null; created_at: string };
 type Item = { id: string; node_id: string | null; title: string; summary: string; location: string; discipline: string; supplier: string; responsible: string; status: string; due_date: string; attention: number; confidence: number; source_title: string | null; latest_update: string | null; latest_update_at: string | null; latest_update_author: string | null; update_count: number; created_at: string; updated_at: string };
+type ReviewEntry = { item: Item; excerpts: { id: string; summary: string; evidence: string; created_at: string }[] };
 type Member = { id: string; email: string; role: string };
 type Invitation = { id: string; email: string; role: string; expires_at: string; accepted_at: string | null; created_at: string };
 type Update = { id: string; summary: string; evidence: string; previous_status: string | null; new_status: string; created_at: string; source_title: string | null; author_email: string | null };
 type HistoryEntry = { id: string; item_id: string; summary: string; evidence: string; created_at: string; source_title: string | null; author_email: string | null };
 type TopicSummary = { node_id: string; summary: string; important_change: string; analysis_status: string; analysis_error: string | null; generated_at: string | null };
 type State = { user: User; projects: Project[]; project?: Project; nodes?: Node[]; sources?: Source[]; items?: Item[]; members?: Member[]; invitations?: Invitation[]; topicSummaries?: TopicSummary[] };
-type View = "overview" | "items" | "sources" | "structure" | "people" | "reports";
+type View = "overview" | "items" | "organize" | "sources" | "structure" | "people" | "reports";
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, { credentials: "include", ...options, headers: { ...(options?.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...options?.headers } });
@@ -43,6 +44,7 @@ const statusName: Record<string, string> = { pendente: "Pendente", em_andamento:
 const views: { id: View; label: string; icon: string }[] = [
   { id: "overview", label: "Relatório vivo", icon: "◫" },
   { id: "items", label: "Assuntos", icon: "▤" },
+  { id: "organize", label: "Organizar", icon: "✎" },
   { id: "sources", label: "Conversa", icon: "▧" },
   { id: "structure", label: "Estrutura", icon: "⌘" },
   { id: "people", label: "Pessoas", icon: "♙" },
@@ -67,6 +69,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [composerFocus, setComposerFocus] = useState(0);
+  const [reviewSourceId, setReviewSourceId] = useState("");
   const [showManual, setShowManual] = useState(false);
   const [selectedItem, setSelectedItem] = useState<Item | null>(null);
   const [updates, setUpdates] = useState<Update[]>([]);
@@ -114,7 +117,7 @@ export default function App() {
     return () => window.clearInterval(interval);
   }, [hasProcessingSource, projectId, refresh]);
 
-  const chooseProject = (id: string) => { setProjectId(id); localStorage.setItem("organizador_project", id); setView("overview"); void refresh(id); };
+  const chooseProject = (id: string) => { setProjectId(id); setReviewSourceId(""); localStorage.setItem("organizador_project", id); setView("overview"); void refresh(id); };
   const after = async (message = "Alterações salvas") => { await refresh(); setNotice(message); setTimeout(() => setNotice(""), 5000); };
   const openItem = async (item: Item) => {
     setSelectedItem(item);
@@ -153,7 +156,8 @@ export default function App() {
       {!project ? <CreateProject onCreated={(id) => chooseProject(id)} setBusy={setBusy} busy={busy} setError={setError} /> : <div className="content">
         {view === "overview" && <LivingReportView project={project} items={items} nodes={nodes} topicSummaries={state.topicSummaries || []} syncedAt={syncedAt} onRefresh={() => refresh(projectId)} onOpen={openItem} onCompose={() => { setView("sources"); setComposerFocus((value) => value + 1); }} />}
         {view === "items" && <ItemsView items={items} nodes={nodes} onOpen={openItem} onManual={() => setShowManual(true)} />}
-        {view === "sources" && <SourcesView sources={sources} projectId={projectId} onRefresh={after} setError={setError} focusSignal={composerFocus} />}
+        {view === "organize" && <OrganizeView projectId={projectId} items={items} nodes={nodes} sources={sources} sourceId={reviewSourceId} onSourceChange={setReviewSourceId} onRefresh={after} onOpen={openItem} setError={setError} />}
+        {view === "sources" && <SourcesView sources={sources} projectId={projectId} onRefresh={after} onReview={(id) => { setReviewSourceId(id); setView("organize"); }} setError={setError} focusSignal={composerFocus} />}
         {view === "structure" && <StructureView nodes={nodes} projectId={projectId} owner={project.role === "owner"} onRefresh={after} setError={setError} />}
         {view === "people" && <PeopleView members={state.members || []} invitations={state.invitations || []} projectId={projectId} owner={project.role === "owner"} onRefresh={after} setError={setError} />}
         {view === "reports" && <ReportsView items={items} nodes={nodes} project={project} />}
@@ -386,7 +390,87 @@ function ItemsView({ items, nodes, onOpen, onManual }: { items: Item[]; nodes: N
   return <><div className="page-heading"><div><div className="eyebrow">MAPA DE CONHECIMENTO</div><h1>Assuntos</h1><p>O estado atual de cada assunto, com responsáveis, prazos e fontes.</p></div><button className="button secondary" onClick={onManual}>＋ Registro manual</button></div><div className="filters"><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar assuntos, pessoas ou fornecedores..." /><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">Todos os estados</option>{Object.entries(statusName).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select value={node} onChange={(event) => setNode(event.target.value)}><option value="">Todas as categorias</option>{nodes.filter((entry) => !entry.archived).map((entry) => <option key={entry.id} value={entry.id}>{entry.title}</option>)}</select></div><div className="panel table-panel"><div className="list-head"><span>ASSUNTO</span><span>ESTADO</span><span>ATUALIZAÇÃO</span></div>{visible.map((item) => <button className="topic-row" key={item.id} onClick={() => onOpen(item)}><div><strong>{item.title}</strong><small>{[item.location, item.discipline, item.responsible].filter(Boolean).join(" · ") || "Sem detalhes adicionais"}</small><span className="topic-latest">{item.latest_update || item.summary || "Sem atualização resumida"}</span><small className="topic-history">{item.update_count || 0} atualização(ões) no histórico · Última em {date(item.latest_update_at || item.updated_at)}</small></div><Status item={item} /><span className="row-date">{date(item.latest_update_at || item.updated_at)}</span></button>)}{!visible.length && <Empty icon="▤" title="Nenhum assunto encontrado" text="Ajuste os filtros ou adicione uma informação ao projeto." />}</div></>;
 }
 
-function SourcesView({ sources, projectId, onRefresh, setError, focusSignal }: { sources: Source[]; projectId: string; onRefresh: (message?: string) => Promise<void>; setError: (value: string) => void; focusSignal: number }) {
+function OrganizeView({ projectId, items, nodes, sources, sourceId, onSourceChange, onRefresh, onOpen, setError }: { projectId: string; items: Item[]; nodes: Node[]; sources: Source[]; sourceId: string; onSourceChange: (id: string) => void; onRefresh: (message?: string) => Promise<void>; onOpen: (item: Item) => void; setError: (value: string) => void }) {
+  const [sourceEntries, setSourceEntries] = useState<ReviewEntry[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [revision, setRevision] = useState(0);
+  const [search, setSearch] = useState("");
+  const [onlyUnclassified, setOnlyUnclassified] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [bulkNodeId, setBulkNodeId] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, { title: string; nodeId: string }>>({});
+  const [saving, setSaving] = useState(false);
+  const options = useMemo(() => categoryOptions(nodes), [nodes]);
+  useEffect(() => { setSelected([]); }, [search, onlyUnclassified]);
+
+  useEffect(() => {
+    setSelected([]); setDrafts({}); setSourceEntries([]);
+    if (!sourceId) { setLoading(false); return; }
+    let active = true;
+    setLoading(true);
+    void api<{ entries: ReviewEntry[] }>(`/api/projects/${projectId}/sources/${sourceId}/review`)
+      .then((result) => { if (active) setSourceEntries(result.entries); })
+      .catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : "Falha ao carregar a revisão"); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [projectId, sourceId, revision]);
+
+  const entries = sourceId ? sourceEntries : items.map((item) => ({ item, excerpts: [] }));
+  const visible = entries.filter(({ item, excerpts }) => {
+    const draft = drafts[item.id];
+    const nodeId = draft ? draft.nodeId : item.node_id || "";
+    if (onlyUnclassified && nodeId) return false;
+    if (!search) return true;
+    return `${draft?.title || item.title} ${item.summary} ${item.location} ${item.discipline} ${excerpts.map((part) => `${part.summary} ${part.evidence}`).join(" ")}`.toLocaleLowerCase("pt-BR").includes(search.toLocaleLowerCase("pt-BR"));
+  }).sort((a, b) => Number(!b.item.node_id) - Number(!a.item.node_id) || a.item.title.localeCompare(b.item.title, "pt-BR"));
+  const changed = entries.filter(({ item }) => {
+    const draft = drafts[item.id];
+    return draft && (draft.title.trim() !== item.title || draft.nodeId !== (item.node_id || ""));
+  });
+  const unclassifiedCount = entries.filter(({ item }) => !(drafts[item.id]?.nodeId ?? item.node_id)).length;
+
+  const edit = (item: Item, patch: Partial<{ title: string; nodeId: string }>) => setDrafts((before) => ({ ...before, [item.id]: { title: before[item.id]?.title ?? item.title, nodeId: before[item.id]?.nodeId ?? item.node_id ?? "", ...patch } }));
+  const changeScope = (id: string) => {
+    if (changed.length && !window.confirm("Há correções não salvas. Trocar de lista e descartá-las?")) return;
+    onSourceChange(id);
+  };
+  const reload = async () => {
+    if (changed.length && !window.confirm("Descartar as correções não salvas e atualizar a lista?")) return;
+    setDrafts({}); setSelected([]);
+    await onRefresh("Lista de organização atualizada");
+    if (sourceId) setRevision((value) => value + 1);
+  };
+  const save = async () => {
+    if (!changed.length || saving) return;
+    if (changed.length > 500) { setError("Salve até 500 assuntos por vez."); return; }
+    setSaving(true);
+    try {
+      await post(`/api/projects/${projectId}/items/organize`, { changes: changed.map(({ item }) => ({ id: item.id, title: drafts[item.id].title.trim(), nodeId: drafts[item.id].nodeId || null, expectedUpdatedAt: item.updated_at })) }, "PATCH");
+      setDrafts({}); setSelected([]);
+      await onRefresh(`${changed.length} assunto(s) reorganizado(s). As sínteses estão sendo atualizadas.`);
+      if (sourceId) setRevision((value) => value + 1);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao salvar as correções"); }
+    finally { setSaving(false); }
+  };
+
+  return <div className="organize-page">
+    <div className="page-heading"><div><div className="eyebrow">REVISÃO DA ORGANIZAÇÃO</div><h1>Organizar assuntos</h1><p>Confira o que a análise colocou em cada tópico. Ajuste os títulos e destinos e salve tudo de uma vez.</p></div><div className="organize-heading-actions"><button className="button secondary" onClick={() => void reload()}>↻ Atualizar lista</button><button className="button primary" onClick={() => void save()} disabled={!changed.length || saving}>{saving ? "Salvando..." : `Salvar ${changed.length} correção(ões)`}</button></div></div>
+    <div className="organize-toolbar panel"><label>Revisar<select value={sourceId} onChange={(event) => changeScope(event.target.value)}><option value="">Todos os assuntos do projeto</option>{sources.filter((source) => (source.topic_count || 0) > 0).map((source) => <option key={source.id} value={source.id}>{date(source.created_at)} · {source.file_name || source.title.slice(0, 70)} ({source.topic_count})</option>)}</select></label><label>Buscar<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Assunto, local ou texto da fonte" /></label><label className="organize-check"><input type="checkbox" checked={onlyUnclassified} onChange={(event) => setOnlyUnclassified(event.target.checked)} /> Só sem tópico</label></div>
+    <div className="organize-count"><span><strong>{entries.length}</strong> assunto(s) nesta lista · <strong>{unclassifiedCount}</strong> sem tópico</span>{sourceId && <span>A correção de um assunto atualiza sua posição em todo o relatório.</span>}</div>
+    {!!visible.length && <div className="organize-bulk panel"><label><input type="checkbox" checked={visible.every(({ item }) => selected.includes(item.id))} onChange={(event) => setSelected((before) => event.target.checked ? [...new Set([...before, ...visible.map(({ item }) => item.id)])] : before.filter((id) => !visible.some(({ item }) => item.id === id)))} /> Selecionar os {visible.length} exibidos</label><select value={bulkNodeId} onChange={(event) => setBulkNodeId(event.target.value)} aria-label="Tópico para os selecionados"><option value="">Escolha o tópico para aplicar em lote</option>{options.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select><button className="button secondary" disabled={!selected.length || !bulkNodeId} onClick={() => { for (const entry of entries) if (selected.includes(entry.item.id)) edit(entry.item, { nodeId: bulkNodeId }); setSelected([]); setBulkNodeId(""); }}>Aplicar a {selected.length} selecionado(s)</button></div>}
+    <div className="organize-list">{loading && <p className="organize-loading">Carregando assuntos desta informação...</p>}{!loading && visible.map(({ item, excerpts }) => {
+      const draft = drafts[item.id];
+      const title = draft?.title ?? item.title;
+      const nodeId = draft?.nodeId ?? item.node_id ?? "";
+      const dirty = title.trim() !== item.title || nodeId !== (item.node_id || "");
+      const activeNode = nodes.find((node) => node.id === item.node_id);
+      return <article className={`organize-card panel${dirty ? " is-dirty" : ""}`} key={item.id}><div className="organize-card-top"><label className="organize-select"><input type="checkbox" checked={selected.includes(item.id)} onChange={(event) => setSelected((before) => event.target.checked ? [...before, item.id] : before.filter((id) => id !== item.id))} aria-label={`Selecionar ${item.title}`} /></label><div><small>{item.location || item.discipline || item.source_title || "Assunto do projeto"}{dirty && <b> · Alterado</b>}</small>{excerpts.length > 0 && <p>{excerpts.map((part) => part.summary).join(" · ")}</p>}{!excerpts.length && <p>{item.latest_update || item.summary}</p>}</div><button className="chat-link" onClick={() => onOpen(items.find((entry) => entry.id === item.id) || item)}>Ver histórico ↗</button></div>{excerpts.some((part) => part.evidence) && <details className="organize-evidence"><summary>Ver trecho da fonte</summary>{excerpts.filter((part) => part.evidence).map((part) => <blockquote key={part.id}>{part.evidence}</blockquote>)}</details>}<div className="organize-fields"><label>Título do assunto<input value={title} maxLength={255} onChange={(event) => edit(item, { title: event.target.value })} /></label><label>Tópico do relatório<select value={nodeId} onChange={(event) => edit(item, { nodeId: event.target.value })}><option value="">Aguardando confirmação</option>{activeNode?.archived && <option value={activeNode.id} disabled>{activeNode.title} (arquivado)</option>}{options.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label></div></article>;
+    })}{!loading && !visible.length && <Empty icon="▤" title="Nenhum assunto nesta seleção" text="Troque a fonte ou remova o filtro para continuar a revisão." />}</div>
+    {!!changed.length && <div className="organize-save"><span>{changed.length} correção(ões) pronta(s) para salvar</span><button className="button primary" disabled={saving} onClick={() => void save()}>{saving ? "Salvando..." : "Salvar correções"}</button></div>}
+  </div>;
+}
+
+function SourcesView({ sources, projectId, onRefresh, onReview, setError, focusSignal }: { sources: Source[]; projectId: string; onRefresh: (message?: string) => Promise<void>; onReview: (sourceId: string) => void; setError: (value: string) => void; focusSignal: number }) {
   const [body, setBody] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [sending, setSending] = useState(false);
@@ -453,6 +537,7 @@ function SourcesView({ sources, projectId, onRefresh, setError, focusSignal }: {
             {source.body && <p className="chat-body">{longBody && !isExpanded ? `${source.body.slice(0, 1800)}…` : source.body}</p>}
             {longBody && <button className="chat-link" onClick={() => setExpanded((current) => isExpanded ? current.filter((id) => id !== source.id) : [...current, source.id])}>{isExpanded ? "Mostrar menos" : "Ler mensagem completa"}</button>}
             {source.file_name && <a className="chat-file" href={`/api/projects/${projectId}/sources/${source.id}/file`}>▧ {source.file_name} <span>Baixar ↗</span></a>}
+            {source.analysis_status === "completed" && !!source.topic_count && <button className="chat-link" onClick={() => onReview(source.id)}>Revisar {source.topic_count} assunto(s) desta informação →</button>}
             {source.analysis_error && <div className="source-error">{source.analysis_error}</div>}
             {["failed", "needs_key"].includes(source.analysis_status) && <button className="chat-link" disabled={processing === source.id} onClick={async () => { setProcessing(source.id); try { const result = await post<{ status: string; error?: string }>(`/api/projects/${projectId}/sources/${source.id}/reprocess`, {}); await onRefresh(result.status === "completed" ? "Informação analisada" : "Análise pendente"); if (result.error) setError(result.error); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao reprocessar"); } finally { setProcessing(""); } }}>{processing === source.id ? "Analisando..." : "Tentar analisar novamente"}</button>}
           </div>

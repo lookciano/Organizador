@@ -107,6 +107,12 @@ const schema = [
     previous_status VARCHAR(30), new_status VARCHAR(30) NOT NULL,
     created_at VARCHAR(30) NOT NULL, INDEX (item_id), INDEX (source_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS item_organization (
+    item_id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL,
+    title_locked TINYINT NOT NULL DEFAULT 0,
+    node_locked TINYINT NOT NULL DEFAULT 0,
+    updated_at VARCHAR(30) NOT NULL, INDEX (project_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS topic_summaries (
     node_id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL,
     revision CHAR(64) NOT NULL, summary TEXT NOT NULL,

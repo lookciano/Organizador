@@ -32,6 +32,12 @@ const text = (value, max = 255) => String(value || '').trim().slice(0, max);
 const fail = (res, code, message) => res.status(code).json({ error: message });
 const run = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 const updateTopicSummaries = (projectId) => { void refreshTopicSummariesForProject(projectId).catch((error) => console.error('Falha ao atualizar sínteses:', error)); };
+async function lockOrganization(connection, projectId, itemId, title, node) {
+  if (!title && !node) return;
+  await connection.execute(`INSERT INTO item_organization (item_id,project_id,title_locked,node_locked,updated_at) VALUES (?,?,?,?,?)
+    ON DUPLICATE KEY UPDATE title_locked=GREATEST(title_locked,VALUES(title_locked)),node_locked=GREATEST(node_locked,VALUES(node_locked)),updated_at=VALUES(updated_at)`,
+    [itemId, projectId, Number(title), Number(node), now()]);
+}
 
 function readCookie(req, name) {
   return (req.headers.cookie || '').split(';').map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1) || '';
@@ -284,13 +290,15 @@ async function processSource(sourceId, projectId) {
         let itemId = entry.existingItemId || createdByKey.get(key);
         let previousStatus = null;
         if (itemId) {
-          const [oldRows] = await connection.execute('SELECT * FROM items WHERE id=? AND project_id=?', [itemId, projectId]);
+          const [oldRows] = await connection.execute('SELECT * FROM items WHERE id=? AND project_id=? FOR UPDATE', [itemId, projectId]);
           const old = oldRows[0];
           if (!old) itemId = '';
           else {
+            const [locks] = await connection.execute('SELECT title_locked,node_locked FROM item_organization WHERE item_id=? AND project_id=?', [itemId, projectId]);
+            const lock = locks[0] || {};
             previousStatus = old.status;
             await connection.execute(`UPDATE items SET node_id=?,title=?,summary=?,location=?,discipline=?,supplier=?,responsible=?,status=?,due_date=?,attention=?,confidence=?,latest_source_id=?,updated_at=? WHERE id=?`,
-              [entry.nodeId || old.node_id, entry.title || old.title, entry.summary || old.summary, entry.location || old.location, entry.discipline || old.discipline, entry.supplier || old.supplier, entry.responsible || old.responsible, entry.status === 'informativo' ? old.status : entry.status, entry.dueDate || old.due_date, Number(entry.attention), entry.confidence, sourceId, stamp, itemId]);
+              [lock.node_locked ? old.node_id : entry.nodeId || old.node_id, lock.title_locked ? old.title : entry.title || old.title, entry.summary || old.summary, entry.location || old.location, entry.discipline || old.discipline, entry.supplier || old.supplier, entry.responsible || old.responsible, entry.status === 'informativo' ? old.status : entry.status, entry.dueDate || old.due_date, Number(entry.attention), entry.confidence, sourceId, stamp, itemId]);
           }
         }
         if (!itemId) {
@@ -446,14 +454,75 @@ app.patch('/api/projects/:projectId/items/:itemId/category', requireUser, member
   const nodeId = text(req.body.nodeId, 36);
   if (!nodeId) return fail(res, 400, 'Escolha um tópico');
   const [[items], [nodes]] = await Promise.all([
-    db().execute('SELECT id FROM items WHERE id=? AND project_id=?', [req.params.itemId, req.params.projectId]),
+    db().execute('SELECT id,node_id FROM items WHERE id=? AND project_id=?', [req.params.itemId, req.params.projectId]),
     db().execute('SELECT id FROM structure_nodes WHERE id=? AND project_id=? AND archived=0', [nodeId, req.params.projectId]),
   ]);
   if (!items.length) return fail(res, 404, 'Assunto não encontrado');
   if (!nodes.length) return fail(res, 400, 'Tópico inválido');
-  await db().execute('UPDATE items SET node_id=? WHERE id=? AND project_id=?', [nodeId, req.params.itemId, req.params.projectId]);
+  const connection = await db().getConnection();
+  try {
+    await connection.beginTransaction();
+    await connection.execute('UPDATE items SET node_id=?,updated_at=? WHERE id=? AND project_id=?', [nodeId, now(), req.params.itemId, req.params.projectId]);
+    await lockOrganization(connection, req.params.projectId, req.params.itemId, false, nodeId !== items[0].node_id);
+    await connection.commit();
+  } catch (error) { await connection.rollback(); throw error; }
+  finally { connection.release(); }
   updateTopicSummaries(req.params.projectId);
   res.json({ ok: true });
+}));
+
+app.get('/api/projects/:projectId/sources/:sourceId/review', requireUser, membership, run(async (req, res) => {
+  const [sources] = await db().execute('SELECT id FROM sources WHERE id=? AND project_id=?', [req.params.sourceId, req.params.projectId]);
+  if (!sources.length) return fail(res, 404, 'Fonte não encontrada');
+  const [rows] = await db().execute(`SELECT i.id,i.node_id,i.title,i.summary,i.location,i.discipline,i.supplier,i.responsible,i.status,i.due_date,i.attention,i.confidence,i.latest_source_id,i.created_at,i.updated_at,
+      u.id AS update_id,u.summary AS source_summary,u.evidence AS source_evidence,u.created_at AS source_update_at
+    FROM item_updates u JOIN items i ON i.id=u.item_id
+    WHERE u.source_id=? AND i.project_id=? ORDER BY u.created_at,u.id`, [req.params.sourceId, req.params.projectId]);
+  const byItem = new Map();
+  for (const row of rows) {
+    if (!byItem.has(row.id)) byItem.set(row.id, { item: { id: row.id, node_id: row.node_id, title: row.title, summary: row.summary, location: row.location, discipline: row.discipline, supplier: row.supplier, responsible: row.responsible, status: row.status, due_date: row.due_date, attention: row.attention, confidence: row.confidence, created_at: row.created_at, updated_at: row.updated_at }, excerpts: [] });
+    byItem.get(row.id).excerpts.push({ id: row.update_id, summary: row.source_summary, evidence: row.source_evidence, created_at: row.source_update_at });
+  }
+  res.json({ entries: [...byItem.values()] });
+}));
+
+app.patch('/api/projects/:projectId/items/organize', requireUser, membership, run(async (req, res) => {
+  const changes = req.body.changes;
+  if (!Array.isArray(changes) || !changes.length || changes.length > 500) return fail(res, 400, 'Envie de 1 a 500 assuntos por vez');
+  if (changes.some((change) => !change || typeof change !== 'object')) return fail(res, 400, 'Há assuntos inválidos na revisão');
+  if (new Set(changes.map((change) => change.id)).size !== changes.length) return fail(res, 400, 'Há assuntos repetidos na revisão');
+  const ids = changes.map((change) => text(change.id, 36));
+  if (ids.some((id) => !id) || new Set(ids).size !== ids.length) return fail(res, 400, 'Há assuntos inválidos ou repetidos na revisão');
+  const [items] = await db().execute(`SELECT id,node_id,title,updated_at FROM items WHERE project_id=? AND id IN (${ids.map(() => '?').join(',')})`, [req.params.projectId, ...ids]);
+  if (items.length !== ids.length) return fail(res, 404, 'Um dos assuntos não foi encontrado');
+  const existing = new Map(items.map((item) => [item.id, item]));
+  const [nodes] = await db().execute('SELECT id FROM structure_nodes WHERE project_id=? AND archived=0', [req.params.projectId]);
+  const validNodes = new Set(nodes.map((node) => node.id));
+  const cleaned = [];
+  for (const change of changes) {
+    const id = text(change.id, 36);
+    const title = text(change.title, 255);
+    const nodeId = change.nodeId ? text(change.nodeId, 36) : null;
+    if (!title || title.length < 3) return fail(res, 400, 'Cada assunto precisa de um título com pelo menos 3 caracteres');
+    if (nodeId && !validNodes.has(nodeId) && existing.get(id).node_id !== nodeId) return fail(res, 400, 'Um dos tópicos escolhidos não existe mais');
+    if (!change.expectedUpdatedAt || existing.get(id).updated_at !== change.expectedUpdatedAt) return fail(res, 409, 'Um assunto mudou durante a revisão. Atualize a lista antes de salvar.');
+    cleaned.push({ id, title, nodeId, expectedUpdatedAt: change.expectedUpdatedAt, lockTitle: title !== existing.get(id).title, lockNode: nodeId !== existing.get(id).node_id });
+  }
+  const connection = await db().getConnection();
+  try {
+    await connection.beginTransaction();
+    for (const change of cleaned) {
+      const stamp = new Date(Math.max(Date.now(), Date.parse(change.expectedUpdatedAt) + 1)).toISOString();
+      const [result] = await connection.execute('UPDATE items SET title=?,node_id=?,updated_at=? WHERE id=? AND project_id=? AND updated_at=?',
+        [change.title, change.nodeId, stamp, change.id, req.params.projectId, change.expectedUpdatedAt]);
+      if (result.affectedRows !== 1) { const error = new Error('Um assunto mudou durante a revisão. Atualize a lista antes de salvar.'); error.status = 409; throw error; }
+      await lockOrganization(connection, req.params.projectId, change.id, change.lockTitle, change.lockNode);
+    }
+    await connection.commit();
+    updateTopicSummaries(req.params.projectId);
+    res.json({ ok: true, updated: cleaned.length });
+  } catch (error) { await connection.rollback(); throw error; }
+  finally { connection.release(); }
 }));
 
 app.post('/api/projects/:projectId/items/:itemId/category/suggest', requireUser, membership, run(async (req, res) => {
@@ -465,6 +534,8 @@ app.post('/api/projects/:projectId/items/:itemId/category/suggest', requireUser,
   if (!nodes.length) return fail(res, 400, 'Crie um tópico na estrutura antes de classificar');
   const result = await classifyNode({ ...items[0], nodes });
   if (!result.nodeId) return res.json({ classification: 'needs_confirmation' });
+  const [locks] = await db().execute('SELECT node_locked FROM item_organization WHERE item_id=? AND project_id=?', [req.params.itemId, req.params.projectId]);
+  if (locks[0]?.node_locked) return res.json({ classification: 'manual' });
   await db().execute('UPDATE items SET node_id=? WHERE id=? AND project_id=?', [result.nodeId, req.params.itemId, req.params.projectId]);
   updateTopicSummaries(req.params.projectId);
   res.json({ classification: 'automatic' });
@@ -490,6 +561,7 @@ app.patch('/api/projects/:projectId/items/:itemId', requireUser, membership, run
   try {
     await connection.beginTransaction();
     await connection.execute('UPDATE items SET node_id=?,summary=?,responsible=?,supplier=?,status=?,due_date=?,attention=?,updated_at=? WHERE id=?', [nodeId, summary, responsible, supplier, status, dueDate, attention, stamp, old.id]);
+    await lockOrganization(connection, req.params.projectId, old.id, false, nodeId !== old.node_id);
     await connection.execute('INSERT INTO item_updates (id,item_id,source_id,author_id,summary,evidence,previous_status,new_status,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
       [randomUUID(), old.id, null, req.user.id, text(req.body.note, 2000) || 'Atualização manual', '', old.status, status, stamp]);
     await connection.commit();
@@ -527,6 +599,7 @@ app.get('*', (_req, res) => res.sendFile(join(root, '..', 'dist', 'index.html'))
 app.use((error, _req, res, _next) => {
   console.error(error);
   if (error.type === 'entity.too.large') return fail(res, 413, 'Arquivo ou mensagem muito grande');
+  if (error.status === 409) return fail(res, 409, error.message);
   return fail(res, 500, 'Não foi possível concluir a operação');
 });
 
