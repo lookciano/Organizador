@@ -70,6 +70,7 @@ export default function App() {
   const [notice, setNotice] = useState("");
   const [composerFocus, setComposerFocus] = useState(0);
   const [reviewSourceId, setReviewSourceId] = useState("");
+  const [reviewDirty, setReviewDirty] = useState(false);
   const [showManual, setShowManual] = useState(false);
   const [selectedItem, setSelectedItem] = useState<Item | null>(null);
   const [updates, setUpdates] = useState<Update[]>([]);
@@ -117,7 +118,12 @@ export default function App() {
     return () => window.clearInterval(interval);
   }, [hasProcessingSource, projectId, refresh]);
 
-  const chooseProject = (id: string) => { setProjectId(id); setReviewSourceId(""); localStorage.setItem("organizador_project", id); setView("overview"); void refresh(id); };
+  const leaveReview = () => {
+    if (view === "organize" && reviewDirty && !window.confirm("Há correções não salvas. Sair e descartá-las?")) return false;
+    setReviewDirty(false);
+    return true;
+  };
+  const chooseProject = (id: string) => { if (!leaveReview()) return; setProjectId(id); setReviewSourceId(""); localStorage.setItem("organizador_project", id); setView("overview"); void refresh(id); };
   const after = async (message = "Alterações salvas") => { await refresh(); setNotice(message); setTimeout(() => setNotice(""), 5000); };
   const openItem = async (item: Item) => {
     setSelectedItem(item);
@@ -144,19 +150,19 @@ export default function App() {
         {state.projects.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
       </select>
       <nav className="nav" aria-label="Navegação principal">
-        {views.map((entry) => <button key={entry.id} className={view === entry.id ? "nav-link active" : "nav-link"} onClick={() => setView(entry.id)} disabled={!project}><span className="nav-icon">{entry.icon}</span>{entry.label}{entry.id === "items" && !!counts.open && <em>{counts.open}</em>}</button>)}
+        {views.map((entry) => <button key={entry.id} className={view === entry.id ? "nav-link active" : "nav-link"} onClick={() => { if (entry.id !== view && leaveReview()) setView(entry.id); }} disabled={!project}><span className="nav-icon">{entry.icon}</span>{entry.label}{entry.id === "items" && !!counts.open && <em>{counts.open}</em>}</button>)}
       </nav>
-      <div className="sidebar-bottom"><div className="side-help"><strong>Uma fonte. Várias perspectivas.</strong><p>Informações registradas ficam ligadas aos assuntos e podem ser verificadas a qualquer momento.</p></div><div className="account"><span className="avatar">{state.user.email.charAt(0).toUpperCase()}</span><div><strong>{state.user.email.split("@")[0]}</strong><small>{state.user.email}</small></div><button title="Sair" onClick={async () => { await post("/api/auth/logout", {}); setState(null); }}>↗</button></div></div>
+      <div className="sidebar-bottom"><div className="side-help"><strong>Uma fonte. Várias perspectivas.</strong><p>Informações registradas ficam ligadas aos assuntos e podem ser verificadas a qualquer momento.</p></div><div className="account"><span className="avatar">{state.user.email.charAt(0).toUpperCase()}</span><div><strong>{state.user.email.split("@")[0]}</strong><small>{state.user.email}</small></div><button title="Sair" onClick={async () => { if (!leaveReview()) return; await post("/api/auth/logout", {}); setState(null); }}>↗</button></div></div>
     </aside>
 
     <main className="main">
-      <header className="topbar"><div className="breadcrumb">Projetos <span>/</span> {project?.name || "Novo projeto"}</div><div className="top-actions"><span className="privacy-pill">● Acesso restrito</span>{project && view !== "sources" && <button className="button primary" onClick={() => { setView("sources"); setComposerFocus((value) => value + 1); }}>＋ Escrever atualização</button>}</div></header>
+      <header className="topbar"><div className="breadcrumb">Projetos <span>/</span> {project?.name || "Novo projeto"}</div><div className="top-actions"><span className="privacy-pill">● Acesso restrito</span>{project && view !== "sources" && <button className="button primary" onClick={() => { if (!leaveReview()) return; setView("sources"); setComposerFocus((value) => value + 1); }}>＋ Escrever atualização</button>}</div></header>
       {error && <div className="alert error" role="alert">{error}<button onClick={() => setError("")}>×</button></div>}
       {notice && <div className="alert success" role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
       {!project ? <CreateProject onCreated={(id) => chooseProject(id)} setBusy={setBusy} busy={busy} setError={setError} /> : <div className="content">
         {view === "overview" && <LivingReportView project={project} items={items} nodes={nodes} topicSummaries={state.topicSummaries || []} syncedAt={syncedAt} onRefresh={() => refresh(projectId)} onOpen={openItem} onCompose={() => { setView("sources"); setComposerFocus((value) => value + 1); }} />}
         {view === "items" && <ItemsView items={items} nodes={nodes} onOpen={openItem} onManual={() => setShowManual(true)} />}
-        {view === "organize" && <OrganizeView projectId={projectId} items={items} nodes={nodes} sources={sources} sourceId={reviewSourceId} onSourceChange={setReviewSourceId} onRefresh={after} onOpen={openItem} setError={setError} />}
+        {view === "organize" && <OrganizeView projectId={projectId} items={items} nodes={nodes} sources={sources} sourceId={reviewSourceId} onSourceChange={setReviewSourceId} onDirtyChange={setReviewDirty} onRefresh={after} onOpen={openItem} setError={setError} />}
         {view === "sources" && <SourcesView sources={sources} projectId={projectId} onRefresh={after} onReview={(id) => { setReviewSourceId(id); setView("organize"); }} setError={setError} focusSignal={composerFocus} />}
         {view === "structure" && <StructureView nodes={nodes} projectId={projectId} owner={project.role === "owner"} onRefresh={after} setError={setError} />}
         {view === "people" && <PeopleView members={state.members || []} invitations={state.invitations || []} projectId={projectId} owner={project.role === "owner"} onRefresh={after} setError={setError} />}
@@ -390,7 +396,7 @@ function ItemsView({ items, nodes, onOpen, onManual }: { items: Item[]; nodes: N
   return <><div className="page-heading"><div><div className="eyebrow">MAPA DE CONHECIMENTO</div><h1>Assuntos</h1><p>O estado atual de cada assunto, com responsáveis, prazos e fontes.</p></div><button className="button secondary" onClick={onManual}>＋ Registro manual</button></div><div className="filters"><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar assuntos, pessoas ou fornecedores..." /><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">Todos os estados</option>{Object.entries(statusName).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select value={node} onChange={(event) => setNode(event.target.value)}><option value="">Todas as categorias</option>{nodes.filter((entry) => !entry.archived).map((entry) => <option key={entry.id} value={entry.id}>{entry.title}</option>)}</select></div><div className="panel table-panel"><div className="list-head"><span>ASSUNTO</span><span>ESTADO</span><span>ATUALIZAÇÃO</span></div>{visible.map((item) => <button className="topic-row" key={item.id} onClick={() => onOpen(item)}><div><strong>{item.title}</strong><small>{[item.location, item.discipline, item.responsible].filter(Boolean).join(" · ") || "Sem detalhes adicionais"}</small><span className="topic-latest">{item.latest_update || item.summary || "Sem atualização resumida"}</span><small className="topic-history">{item.update_count || 0} atualização(ões) no histórico · Última em {date(item.latest_update_at || item.updated_at)}</small></div><Status item={item} /><span className="row-date">{date(item.latest_update_at || item.updated_at)}</span></button>)}{!visible.length && <Empty icon="▤" title="Nenhum assunto encontrado" text="Ajuste os filtros ou adicione uma informação ao projeto." />}</div></>;
 }
 
-function OrganizeView({ projectId, items, nodes, sources, sourceId, onSourceChange, onRefresh, onOpen, setError }: { projectId: string; items: Item[]; nodes: Node[]; sources: Source[]; sourceId: string; onSourceChange: (id: string) => void; onRefresh: (message?: string) => Promise<void>; onOpen: (item: Item) => void; setError: (value: string) => void }) {
+function OrganizeView({ projectId, items, nodes, sources, sourceId, onSourceChange, onDirtyChange, onRefresh, onOpen, setError }: { projectId: string; items: Item[]; nodes: Node[]; sources: Source[]; sourceId: string; onSourceChange: (id: string) => void; onDirtyChange: (value: boolean) => void; onRefresh: (message?: string) => Promise<void>; onOpen: (item: Item) => void; setError: (value: string) => void }) {
   const [sourceEntries, setSourceEntries] = useState<ReviewEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0);
@@ -427,6 +433,13 @@ function OrganizeView({ projectId, items, nodes, sources, sourceId, onSourceChan
     const draft = drafts[item.id];
     return draft && (draft.title.trim() !== item.title || draft.nodeId !== (item.node_id || ""));
   });
+  useEffect(() => { onDirtyChange(changed.length > 0); }, [changed.length, onDirtyChange]);
+  useEffect(() => {
+    if (!changed.length) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [changed.length]);
   const unclassifiedCount = entries.filter(({ item }) => !(drafts[item.id]?.nodeId ?? item.node_id)).length;
 
   const edit = (item: Item, patch: Partial<{ title: string; nodeId: string }>) => setDrafts((before) => ({ ...before, [item.id]: { title: before[item.id]?.title ?? item.title, nodeId: before[item.id]?.nodeId ?? item.node_id ?? "", ...patch } }));
