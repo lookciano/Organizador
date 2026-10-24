@@ -120,13 +120,50 @@ const schema = [
     analysis_error TEXT, generated_at VARCHAR(30),
     INDEX (project_id), INDEX (analysis_status)
   )`,
+  `CREATE TABLE IF NOT EXISTS topic_summary_history (
+    node_id VARCHAR(36) NOT NULL, project_id VARCHAR(36) NOT NULL,
+    revision CHAR(64) NOT NULL, summary TEXT NOT NULL,
+    important_change TEXT NOT NULL, generated_at VARCHAR(30) NOT NULL,
+    PRIMARY KEY (node_id, revision), INDEX (project_id), INDEX (generated_at)
+  )`,
+  `CREATE TABLE IF NOT EXISTS app_migrations (
+    project_id VARCHAR(36) NOT NULL, migration_key VARCHAR(100) NOT NULL,
+    applied_at VARCHAR(30) NOT NULL, PRIMARY KEY (project_id, migration_key)
+  )`,
 ];
+
+async function addCommissioningStations(connection) {
+  const template = JSON.parse(await readFile(new URL('../estrutura-inicial.json', import.meta.url), 'utf8'));
+  const section = template.secoes.find((node) => node.titulo === 'Startup e Comissionamento');
+  const stationNames = section?.filhos.find((node) => node.titulo === 'Startup das Subestações')?.filhos.map((node) => node.titulo) || [];
+  const [projects] = await connection.execute('SELECT id FROM projects');
+  for (const project of projects) {
+    const [rows] = await connection.execute('SELECT id,parent_id,title FROM structure_nodes WHERE project_id=? AND archived=0', [project.id]);
+    const parents = rows.filter((node) => node.title === 'Startup e Comissionamento');
+    const target = rows.find((node) => node.title === 'Startup das Subestações' && parents.some((parent) => parent.id === node.parent_id));
+    if (!target) continue;
+    await connection.beginTransaction();
+    try {
+      const [marker] = await connection.execute('INSERT IGNORE INTO app_migrations (project_id,migration_key,applied_at) VALUES (?,?,?)', [project.id, 'commissioning_stations_v1', new Date().toISOString()]);
+      if (marker.affectedRows) {
+        const existing = new Set(rows.filter((node) => node.parent_id === target.id).map((node) => node.title.toLocaleLowerCase('pt-BR')));
+        let order = rows.filter((node) => node.parent_id === target.id).length;
+        for (const title of stationNames) if (!existing.has(title.toLocaleLowerCase('pt-BR'))) {
+          await connection.execute('INSERT INTO structure_nodes (id,project_id,parent_id,title,sort_order,archived,created_at) VALUES (?,?,?,?,?,?,?)',
+            [randomUUID(), project.id, target.id, title, order++, 0, new Date().toISOString()]);
+        }
+      }
+      await connection.commit();
+    } catch (error) { await connection.rollback(); throw error; }
+  }
+}
 
 export async function initializeDatabase() {
   await prepareDatabase();
   const connection = await db().getConnection();
   try {
     for (const statement of schema) await connection.query(statement);
+    await addCommissioningStations(connection);
     const email = process.env.BOOTSTRAP_EMAIL?.trim().toLowerCase();
     const password = process.env.BOOTSTRAP_PASSWORD;
     if (!email || !password || password.length < 12) {

@@ -59,9 +59,19 @@ async function generate(nodeId, projectId, revision) {
       updates.push(...rows);
     }
     const path = structurePaths(nodes).find((entry) => entry.id === nodeId)?.path || node.title;
-    const result = await summarizeTopicHistory({ projectName: projects[0].name, topicPath: path, items, updates });
-    await db().execute('UPDATE topic_summaries SET summary=?,important_change=?,analysis_status=?,analysis_error=NULL,generated_at=? WHERE node_id=? AND project_id=? AND revision=?',
-      [result.summary, result.importantChange, 'completed', new Date().toISOString(), nodeId, projectId, revision]);
+    const [priorSummaries] = await db().execute('SELECT revision,summary,generated_at FROM topic_summary_history WHERE node_id=? AND project_id=? AND revision<>? ORDER BY generated_at,revision', [nodeId, projectId, revision]);
+    const result = await summarizeTopicHistory({ projectName: projects[0].name, topicPath: path, items, updates, priorSummaries });
+    const generatedAt = new Date().toISOString();
+    const connection = await db().getConnection();
+    try {
+      await connection.beginTransaction();
+      const [saved] = await connection.execute("UPDATE topic_summaries SET summary=?,important_change=?,analysis_status='completed',analysis_error=NULL,generated_at=? WHERE node_id=? AND project_id=? AND revision=? AND analysis_status='processing'",
+        [result.summary, result.importantChange, generatedAt, nodeId, projectId, revision]);
+      if (saved.affectedRows) await connection.execute('INSERT IGNORE INTO topic_summary_history (node_id,project_id,revision,summary,important_change,generated_at) VALUES (?,?,?,?,?,?)',
+        [nodeId, projectId, revision, result.summary, result.importantChange, generatedAt]);
+      await connection.commit();
+    } catch (error) { await connection.rollback(); throw error; }
+    finally { connection.release(); }
   } catch (error) {
     console.error('Falha ao sintetizar tópico:', nodeId, error);
     const status = hasModelKey() ? 'failed' : 'needs_key';
@@ -90,7 +100,12 @@ export async function prepareTopicSummaries(projectId, nodes, items) {
   for (const node of activeNodes) {
     const records = groups.get(node.id) || [];
     if (!records.length) {
-      if (existing.has(node.id)) writes.push(db().execute('DELETE FROM topic_summaries WHERE node_id=? AND project_id=?', [node.id, projectId]));
+      const old = existing.get(node.id);
+      if (old?.summary && old.analysis_status === 'completed' && old.generated_at) {
+        writes.push(db().execute('INSERT IGNORE INTO topic_summary_history (node_id,project_id,revision,summary,important_change,generated_at) VALUES (?,?,?,?,?,?)',
+          [node.id, projectId, old.revision, old.summary, old.important_change || '', old.generated_at]));
+      }
+      if (old) writes.push(db().execute('DELETE FROM topic_summaries WHERE node_id=? AND project_id=?', [node.id, projectId]));
       continue;
     }
     const revision = fingerprint(paths.get(node.id) || node.title, records);
@@ -98,6 +113,10 @@ export async function prepareTopicSummaries(projectId, nodes, items) {
     const retryWithKey = old?.analysis_status === 'needs_key' && hasModelKey();
     const initialStatus = hasModelKey() ? 'pending' : 'needs_key';
     if (!old || old.revision !== revision || retryWithKey) {
+      if (old?.summary && old.analysis_status === 'completed' && old.generated_at) {
+        writes.push(db().execute('INSERT IGNORE INTO topic_summary_history (node_id,project_id,revision,summary,important_change,generated_at) VALUES (?,?,?,?,?,?)',
+          [node.id, projectId, old.revision, old.summary, old.important_change || '', old.generated_at]));
+      }
       writes.push(db().execute(`INSERT INTO topic_summaries (node_id,project_id,revision,summary,important_change,analysis_status) VALUES (?,?,?,?,?,?)
         ON DUPLICATE KEY UPDATE
           analysis_error=IF(revision<>VALUES(revision) OR analysis_status='needs_key',NULL,analysis_error),

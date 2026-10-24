@@ -150,6 +150,21 @@ test('não destaca uma suposta mudança sem registros anteriores e posteriores c
   });
 });
 
+test('nova síntese recebe a síntese anterior e os registros originais para conferência', async () => {
+  await mockAnalysis({ bullets: [{ item_id: 'a', text: 'Entrega segue pendente após revisão do prazo.', locations: [] }], important_change: '', changed_item_id: '', change_before: '', change_after: '' }, async (request) => {
+    await summarizeTopicHistory({
+      projectName: 'Teste', topicPath: 'Comissionamento > Ourolândia',
+      items: [{ id: 'a', title: 'Energização', updated_at: '2026-10-24T10:00:00Z', status: 'pendente', summary: 'Prazo em revisão.', responsible: '', supplier: '', due_date: '', attention: 0 }],
+      updates: [{ id: '1', item_id: 'a', created_at: '2026-10-24T10:00:00Z', summary: 'Prazo em revisão.', evidence: '', new_status: 'pendente', source_title: 'Ata' }],
+      priorSummaries: [{ generated_at: '2026-10-23T10:00:00Z', summary: '• Energização: prazo anterior de 25/10.' }],
+    });
+    const prompt = request().input[1].content[0].text;
+    assert.match(prompt, /SÍNTESE ANTERIOR/);
+    assert.match(prompt, /prazo anterior de 25\/10/);
+    assert.match(prompt, /Prazo em revisão/);
+  });
+});
+
 test('síntese inclui um ponto para todo assunto mesmo quando a IA deixa algum de fora', async () => {
   await mockAnalysis({ bullets: [{ item_id: 'a', text: 'Entrega do equipamento ainda pendente.' }], important_change: '', changed_item_id: '', change_before: '', change_after: '' }, async () => {
     const result = await summarizeTopicHistory({

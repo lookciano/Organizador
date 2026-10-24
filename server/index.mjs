@@ -8,6 +8,7 @@ import { db, createProject, initializeDatabase } from './db.mjs';
 import { classifyNode, extractItems } from './ai.mjs';
 import { MAX_SOURCE_TEXT } from './file-text.mjs';
 import { prepareTopicSummaries, refreshTopicSummariesForProject, retryTopicSummary } from './topic-summaries.mjs';
+import { exportStructureCsv, planStructureImport, structureRevision } from './structure-csv.mjs';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -271,6 +272,48 @@ app.post('/api/projects/:projectId/nodes', requireUser, membership, ownerOnly, r
     [id, req.params.projectId, parentId, title, order[0].next_order, 0, now()]);
   updateTopicSummaries(req.params.projectId);
   res.status(201).json({ id });
+}));
+
+const structureRows = async (projectId, connection = db(), lock = false) => {
+  const [rows] = await connection.execute(`SELECT id,parent_id,title,sort_order,archived FROM structure_nodes WHERE project_id=?${lock ? ' FOR UPDATE' : ''}`, [projectId]);
+  return rows;
+};
+
+app.get('/api/projects/:projectId/structure/export', requireUser, membership, run(async (req, res) => {
+  const csv = exportStructureCsv(await structureRows(req.params.projectId));
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="estrutura-projeto.csv"');
+  res.send(csv);
+}));
+
+app.post('/api/projects/:projectId/structure/preview', requireUser, membership, ownerOnly, run(async (req, res) => {
+  const plan = planStructureImport(req.body.csv, await structureRows(req.params.projectId));
+  res.json({ changes: plan.changes, revision: plan.revision, total: plan.rows.length });
+}));
+
+app.post('/api/projects/:projectId/structure/import', requireUser, membership, ownerOnly, run(async (req, res) => {
+  const connection = await db().getConnection();
+  let changed = 0;
+  try {
+    await connection.beginTransaction();
+    const existing = await structureRows(req.params.projectId, connection, true);
+    if (req.body.revision !== structureRevision(existing)) { await connection.rollback(); return fail(res, 409, 'A estrutura mudou. Exporte novamente e revise as alterações antes de importar.'); }
+    const plan = planStructureImport(req.body.csv, existing);
+    changed = plan.changes.length;
+    const ids = new Map(plan.rows.map((row) => [row.code, row.id || randomUUID()]));
+    for (const row of plan.rows) if (!row.id) {
+      await connection.execute('INSERT INTO structure_nodes (id,project_id,parent_id,title,sort_order,archived,created_at) VALUES (?,?,?,?,?,?,?)',
+        [ids.get(row.code), req.params.projectId, row.parentCode ? ids.get(row.parentCode) : null, row.title, row.sortOrder, row.archived, now()]);
+    }
+    for (const row of plan.rows) if (row.id) {
+      await connection.execute('UPDATE structure_nodes SET parent_id=?,title=?,sort_order=?,archived=? WHERE id=? AND project_id=?',
+        [row.parentCode ? ids.get(row.parentCode) : null, row.title, row.sortOrder, row.archived, row.id, req.params.projectId]);
+    }
+    await connection.commit();
+  } catch (error) { await connection.rollback(); throw error; }
+  finally { connection.release(); }
+  if (changed) updateTopicSummaries(req.params.projectId);
+  res.json({ changed });
 }));
 
 app.patch('/api/projects/:projectId/nodes/:nodeId', requireUser, membership, ownerOnly, run(async (req, res) => {

@@ -138,7 +138,21 @@
         {
           "id": "n027",
           "titulo": "Startup das Subestações",
-          "filhos": []
+          "filhos": [
+            { "id": "n065", "titulo": "Ceará-Mirim II", "filhos": [] },
+            { "id": "n066", "titulo": "João Pessoa II", "filhos": [] },
+            { "id": "n067", "titulo": "Pau Ferro", "filhos": [] },
+            { "id": "n068", "titulo": "Messias", "filhos": [] },
+            { "id": "n069", "titulo": "Garanhuns", "filhos": [] },
+            { "id": "n070", "titulo": "Pilões III", "filhos": [] },
+            { "id": "n071", "titulo": "Jussiape", "filhos": [] },
+            { "id": "n072", "titulo": "São João do Paraíso", "filhos": [] },
+            { "id": "n073", "titulo": "Capelinha", "filhos": [] },
+            { "id": "n074", "titulo": "Itabira", "filhos": [] },
+            { "id": "n075", "titulo": "Igaporã", "filhos": [] },
+            { "id": "n076", "titulo": "Ibicoara", "filhos": [] },
+            { "id": "n077", "titulo": "Ourolândia", "filhos": [] }
+          ]
         },
         {
           "id": "n028",
