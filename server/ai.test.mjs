@@ -174,7 +174,7 @@ test('síntese da seção principal organiza subestações pela última informa�
     const result = await summarizeTopicHistory({
       projectName: 'Teste', topicPath: 'Startup e Comissionamento', isMainSection: true,
       items: [
-        { id: 'ouro', title: 'Inspeção', location: 'Ourolândia', created_at: '2026-10-21T12:00:00Z', updated_at: '2026-10-22T12:00:00Z', status: 'pendente', summary: 'Inspeção pendente.', responsible: 'Ana', supplier: '', due_date: '', attention: 0 },
+        { id: 'ouro', title: 'Inspeção', location: 'Ourolândia', node_path: 'Startup e Comissionamento > Startup das Subestações > Ourolândia', created_at: '2026-10-21T12:00:00Z', updated_at: '2026-10-22T12:00:00Z', status: 'pendente', summary: 'Inspeção pendente.', responsible: 'Ana', supplier: '', due_date: '', attention: 0 },
         { id: 'ibi', title: 'Teste', location: 'Ibicoara', created_at: '2026-10-22T12:00:00Z', updated_at: '2026-10-24T12:00:00Z', status: 'concluido', summary: 'Teste concluído.', responsible: 'Bruno', supplier: '', due_date: '', attention: 0 },
         { id: 'geral', title: 'Plano geral', location: '', created_at: '2026-10-23T12:00:00Z', updated_at: '2026-10-23T12:00:00Z', status: 'pendente', summary: 'Plano geral.', responsible: '', supplier: '', due_date: '', attention: 0 },
       ],
@@ -185,6 +185,7 @@ test('síntese da seção principal organiza subestações pela última informa�
       ],
     });
     assert.match(request().input[0].content, /ITEM PRINCIPAL/);
+    assert.match(request().input[1].content[0].text, /Startup das Subestações > Ourolândia/);
     assert.ok(result.summary.indexOf('Subestação Ibicoara') < result.summary.indexOf('Subestação Ourolândia'));
     assert.ok(result.summary.indexOf('Subestação Ourolândia') < result.summary.indexOf('Informações gerais'));
     assert.match(result.summary, /Subestação Ibicoara — última informação em 24\/10\/2026/);

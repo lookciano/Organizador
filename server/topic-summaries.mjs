@@ -22,8 +22,8 @@ function relatedItems(nodes, items) {
   return groups;
 }
 
-function fingerprint(topicPath, items, isMainSection = false) {
-  const records = items.map((item) => [item.id, item.node_id, item.title, item.summary, item.status, item.responsible, item.supplier, item.due_date, item.attention, item.updated_at, item.update_count || 0]);
+function fingerprint(topicPath, items, isMainSection = false, paths = new Map()) {
+  const records = items.map((item) => [item.id, item.node_id, ...(isMainSection ? [paths.get(item.node_id) || ''] : []), item.title, item.summary, item.status, item.responsible, item.supplier, item.due_date, item.attention, item.updated_at, item.update_count || 0]);
   records.sort((a, b) => a[0].localeCompare(b[0]));
   return createHash('sha256').update(JSON.stringify([isMainSection ? SUMMARY_VERSION + 1 : SUMMARY_VERSION, topicPath, records])).digest('hex');
 }
@@ -58,7 +58,9 @@ async function generate(nodeId, projectId, revision) {
       const [rows] = await db().execute(`SELECT u.id,u.item_id,u.summary,u.evidence,u.new_status,u.created_at,s.title AS source_title FROM item_updates u LEFT JOIN sources s ON s.id=u.source_id WHERE u.item_id IN (${marks})`, batch);
       updates.push(...rows);
     }
-    const path = structurePaths(nodes).find((entry) => entry.id === nodeId)?.path || node.title;
+    const paths = new Map(structurePaths(nodes).map((entry) => [entry.id, entry.path]));
+    const path = paths.get(nodeId) || node.title;
+    for (const item of items) item.node_path = paths.get(item.node_id) || '';
     const [priorSummaries] = await db().execute('SELECT revision,summary,generated_at FROM topic_summary_history WHERE node_id=? AND project_id=? AND revision<>? ORDER BY generated_at,revision', [nodeId, projectId, revision]);
     const result = await summarizeTopicHistory({ projectName: projects[0].name, topicPath: path, items, updates, priorSummaries, isMainSection: !node.parent_id });
     const generatedAt = new Date().toISOString();
@@ -108,7 +110,7 @@ export async function prepareTopicSummaries(projectId, nodes, items) {
       if (old) writes.push(db().execute('DELETE FROM topic_summaries WHERE node_id=? AND project_id=?', [node.id, projectId]));
       continue;
     }
-    const revision = fingerprint(paths.get(node.id) || node.title, records, !node.parent_id);
+    const revision = fingerprint(paths.get(node.id) || node.title, records, !node.parent_id, paths);
     const old = existing.get(node.id);
     const retryWithKey = old?.analysis_status === 'needs_key' && hasModelKey();
     const initialStatus = hasModelKey() ? 'pending' : 'needs_key';
