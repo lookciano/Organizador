@@ -59,6 +59,14 @@ const schema = [
     description TEXT NOT NULL, created_by VARCHAR(36) NOT NULL,
     created_at VARCHAR(30) NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS project_context_entries (
+    id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL,
+    author_id VARCHAR(36) NOT NULL, title VARCHAR(255) NOT NULL,
+    body LONGTEXT NOT NULL, extracted_text LONGTEXT NOT NULL,
+    file_name VARCHAR(255), content_type VARCHAR(120), file_data LONGBLOB,
+    archived TINYINT NOT NULL DEFAULT 0, created_at VARCHAR(30) NOT NULL,
+    INDEX (project_id), INDEX (created_at)
+  )`,
   `CREATE TABLE IF NOT EXISTS memberships (
     project_id VARCHAR(36) NOT NULL, user_id VARCHAR(36) NOT NULL,
     role VARCHAR(20) NOT NULL, created_at VARCHAR(30) NOT NULL,

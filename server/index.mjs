@@ -5,10 +5,11 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { db, createProject, initializeDatabase } from './db.mjs';
-import { classifyNode, extractItems } from './ai.mjs';
-import { MAX_SOURCE_TEXT } from './file-text.mjs';
+import { analyzeProjectMatrix, classifyNode, extractItems } from './ai.mjs';
+import { extractFileText, MAX_SOURCE_TEXT } from './file-text.mjs';
 import { prepareTopicSummaries, refreshTopicSummariesForProject, retryTopicSummary } from './topic-summaries.mjs';
 import { exportStructureCsv, planStructureImport, structureRevision } from './structure-csv.mjs';
+import { loadProjectContext, projectContextWindow } from './project-context.mjs';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -114,12 +115,13 @@ app.get('/api/state', requireUser, run(async (req, res) => {
   if (!projectId) return res.json({ user: req.user, projects });
   const project = projects.find((entry) => entry.id === projectId);
   if (!project) return fail(res, 403, 'Projeto não autorizado');
-  const [[nodes], [sources], [items], [members], [invitations]] = await Promise.all([
+  const [[nodes], [sources], [items], [members], [invitations], [contextEntries]] = await Promise.all([
     db().execute('SELECT id,parent_id,title,sort_order,archived,created_at FROM structure_nodes WHERE project_id=? ORDER BY sort_order,title', [projectId]),
     db().execute('SELECT s.id,s.title,s.kind,s.body,s.file_name,s.content_type,s.analysis_status,s.analysis_error,s.created_at,u.email AS author_email FROM sources s LEFT JOIN users u ON u.id=s.author_id WHERE s.project_id=? ORDER BY s.created_at DESC LIMIT 200', [projectId]),
     db().execute('SELECT i.*,s.title AS source_title FROM items i LEFT JOIN sources s ON s.id=i.latest_source_id WHERE i.project_id=? ORDER BY i.updated_at DESC', [projectId]),
     db().execute('SELECT u.id,u.email,m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.project_id=? ORDER BY m.role,u.email', [projectId]),
     db().execute('SELECT id,email,role,expires_at,accepted_at,created_at FROM invitations WHERE project_id=? ORDER BY created_at DESC LIMIT 100', [projectId]),
+    db().execute('SELECT c.id,c.title,c.body,LEFT(c.extracted_text,1200) AS excerpt,c.file_name,c.archived,c.created_at,u.email AS author_email FROM project_context_entries c LEFT JOIN users u ON u.id=c.author_id WHERE c.project_id=? ORDER BY c.created_at DESC,c.id DESC', [projectId]),
   ]);
   if (items.length) {
     const ids = items.map((item) => item.id);
@@ -150,7 +152,7 @@ app.get('/api/state', requireUser, run(async (req, res) => {
     for (const source of sources) source.topic_count = bySource.get(source.id) || 0;
   }
   const topicSummaries = await prepareTopicSummaries(projectId, nodes, items);
-  res.json({ user: req.user, projects, project, nodes, sources, items, members, invitations, topicSummaries });
+  res.json({ user: req.user, projects, project, nodes, sources, items, members, invitations, contextEntries, topicSummaries });
 }));
 
 app.post('/api/projects/:projectId/topics/:nodeId/summary/retry', requireUser, membership, run(async (req, res) => {
@@ -164,6 +166,82 @@ app.post('/api/projects', requireUser, run(async (req, res) => {
   if (name.length < 3) return fail(res, 400, 'Dê um nome ao projeto');
   const id = await createProject(name, text(req.body.description, 2000), req.user.id, req.body.withTemplate !== false);
   res.status(201).json({ id });
+}));
+
+const contextMime = new Set(['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'text/markdown']);
+
+app.post('/api/projects/:projectId/context', requireUser, membership, run(async (req, res) => {
+  const body = text(req.body.body, 30001);
+  if (body.length > 30000) return fail(res, 400, 'Divida o texto do contexto em partes de até 30 mil caracteres');
+  let fileData = null;
+  let fileName = null;
+  let contentType = null;
+  let extracted = '';
+  if (req.body.fileData) {
+    fileName = text(req.body.fileName, 255);
+    contentType = text(req.body.contentType, 120);
+    if (!fileName || !contextMime.has(contentType)) return fail(res, 400, 'Anexe PDF, DOCX, TXT ou Markdown');
+    fileData = Buffer.from(String(req.body.fileData), 'base64');
+    if (!fileData.length || fileData.length > 5 * 1024 * 1024) return fail(res, 400, 'O arquivo deve ter até 5 MB');
+    try { extracted = (await extractFileText(fileData, contentType)).trim(); }
+    catch (error) { return fail(res, 400, `Não foi possível ler o documento: ${error.message}`); }
+    if (!extracted) return fail(res, 400, 'Não encontrei texto legível no documento. Envie uma versão com texto selecionável.');
+  }
+  if (!body && !fileData) return fail(res, 400, 'Escreva o contexto ou anexe um documento');
+  const title = text(req.body.title, 255) || text(body.split(/\r?\n/).find((line) => line.trim()) || fileName || 'Contexto do projeto', 120);
+  const id = randomUUID();
+  await db().execute('INSERT INTO project_context_entries (id,project_id,author_id,title,body,extracted_text,file_name,content_type,file_data,archived,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+    [id, req.params.projectId, req.user.id, title, body, extracted, fileName, contentType, fileData, 0, now()]);
+  updateTopicSummaries(req.params.projectId);
+  res.status(201).json({ id });
+}));
+
+app.get('/api/projects/:projectId/context/:entryId', requireUser, membership, run(async (req, res) => {
+  const [rows] = await db().execute('SELECT id,title,body,extracted_text,file_name,archived,created_at FROM project_context_entries WHERE id=? AND project_id=?', [req.params.entryId, req.params.projectId]);
+  if (!rows.length) return fail(res, 404, 'Contexto não encontrado');
+  res.json({ entry: rows[0] });
+}));
+
+app.get('/api/projects/:projectId/context/:entryId/file', requireUser, membership, run(async (req, res) => {
+  const [rows] = await db().execute('SELECT file_name,content_type,file_data FROM project_context_entries WHERE id=? AND project_id=?', [req.params.entryId, req.params.projectId]);
+  if (!rows.length || !rows[0].file_data) return fail(res, 404, 'Arquivo não encontrado');
+  res.setHeader('Content-Type', rows[0].content_type);
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(rows[0].file_name)}`);
+  res.send(rows[0].file_data);
+}));
+
+app.patch('/api/projects/:projectId/context/:entryId', requireUser, membership, ownerOnly, run(async (req, res) => {
+  if (typeof req.body.archived !== 'boolean') return fail(res, 400, 'Informe se o contexto deve ser arquivado');
+  const [result] = await db().execute('UPDATE project_context_entries SET archived=? WHERE id=? AND project_id=?', [Number(req.body.archived), req.params.entryId, req.params.projectId]);
+  if (!result.affectedRows) return fail(res, 404, 'Contexto não encontrado');
+  updateTopicSummaries(req.params.projectId);
+  res.json({ ok: true });
+}));
+
+app.post('/api/projects/:projectId/matrix/analyze', requireUser, membership, run(async (req, res) => {
+  const kind = text(req.body.kind, 30);
+  if (!['responsibility', 'communication'].includes(kind)) return fail(res, 400, 'Escolha a matriz de responsabilidades ou comunicação');
+  if (!process.env.OPENROUTER_API_KEY && !process.env.OPENAI_API_KEY) return fail(res, 503, 'Configure a chave da IA para analisar a matriz');
+  const [[projects], [nodes], [items], contextEntries] = await Promise.all([
+    db().execute('SELECT name FROM projects WHERE id=?', [req.params.projectId]),
+    db().execute('SELECT id,parent_id,title,archived FROM structure_nodes WHERE project_id=?', [req.params.projectId]),
+    db().execute('SELECT * FROM items WHERE project_id=? ORDER BY title', [req.params.projectId]),
+    loadProjectContext(req.params.projectId),
+  ]);
+  if (!projects.length) return fail(res, 404, 'Projeto não encontrado');
+  const chosen = text(req.body.nodeId, 36);
+  if (chosen && !nodes.some((node) => node.id === chosen && !node.archived)) return fail(res, 400, 'Tópico inválido');
+  const included = new Set(chosen ? [chosen] : nodes.filter((node) => !node.archived).map((node) => node.id));
+  if (chosen) {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const node of nodes) if (!node.archived && node.parent_id && included.has(node.parent_id) && !included.has(node.id)) { included.add(node.id); changed = true; }
+    }
+  }
+  const selected = chosen ? items.filter((item) => included.has(item.node_id)) : items;
+  const rows = await analyzeProjectMatrix({ projectName: projects[0].name, kind, items: selected, nodes: nodes.filter((node) => !node.archived), contextEntries });
+  res.json({ rows, generatedAt: now() });
 }));
 
 app.post('/api/projects/:projectId/invitations', requireUser, membership, ownerOnly, run(async (req, res) => {
@@ -332,9 +410,10 @@ const allowedMime = new Set(['application/pdf', 'application/vnd.openxmlformats-
 async function processSource(sourceId, projectId) {
   const [sourceRows] = await db().execute('SELECT s.*,p.name AS project_name,t.node_id AS target_node_id FROM sources s JOIN projects p ON p.id=s.project_id LEFT JOIN source_targets t ON t.source_id=s.id WHERE s.id=? AND s.project_id=?', [sourceId, projectId]);
   const source = sourceRows[0];
-  const [[allNodes], [existingItems]] = await Promise.all([
+  const [[allNodes], [existingItems], contextEntries] = await Promise.all([
     db().execute('SELECT id,parent_id,title FROM structure_nodes WHERE project_id=? AND archived=0', [projectId]),
     db().execute(`SELECT id,node_id,title,location,status FROM items WHERE project_id=?${source.target_node_id ? ' AND node_id=?' : ''} ORDER BY updated_at DESC LIMIT 100`, source.target_node_id ? [projectId, source.target_node_id] : [projectId]),
+    loadProjectContext(projectId),
   ]);
   const nodeById = new Map(allNodes.map((node) => [node.id, node]));
   const nodes = source.target_node_id ? [] : allNodes;
@@ -349,7 +428,7 @@ async function processSource(sourceId, projectId) {
   }
   try {
     if (source.target_node_id && !nodes.length) throw new Error('O tópico escolhido não está mais disponível');
-    let extracted = await extractItems({ source: { projectName: source.project_name, title: source.title, body: source.body, fileData: source.file_data, contentType: source.content_type, fileName: source.file_name }, nodes, existingItems, preferredNodeId: source.target_node_id });
+    let extracted = await extractItems({ source: { projectName: source.project_name, title: source.title, body: source.body, fileData: source.file_data, contentType: source.content_type, fileName: source.file_name }, nodes, existingItems, preferredNodeId: source.target_node_id, contextEntries });
     if (source.target_node_id && !extracted.length) {
       extracted = [{ existingItemId: '', nodeId: source.target_node_id, title: text(source.body.split(/\r?\n/)[0], 120) || `Atualização em ${nodes.at(-1).title}`, summary: text(source.body, 5000), location: '', discipline: '', supplier: '', responsible: '', status: 'informativo', dueDate: '', attention: false, confidence: 0.5, evidence: text(source.body, 2000) }];
     }
@@ -495,7 +574,8 @@ app.post('/api/projects/:projectId/items', requireUser, membership, run(async (r
     const [nodes] = await db().execute('SELECT id,parent_id,title FROM structure_nodes WHERE project_id=? AND archived=0', [req.params.projectId]);
     if (nodes.length && (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY)) {
       try {
-        const result = await classifyNode({ title, summary, location: text(req.body.location, 160), discipline: text(req.body.discipline, 160), nodes });
+        const projectContext = await projectContextWindow(req.params.projectId, `${title} ${summary} ${req.body.location || ''} ${req.body.discipline || ''}`);
+        const result = await classifyNode({ title, summary, location: text(req.body.location, 160), discipline: text(req.body.discipline, 160), nodes, projectContext });
         if (result.nodeId) {
           nodeId = result.nodeId;
           classification = 'automatic';
@@ -606,7 +686,8 @@ app.post('/api/projects/:projectId/items/:itemId/category/suggest', requireUser,
   ]);
   if (!items.length) return fail(res, 404, 'Assunto não encontrado');
   if (!nodes.length) return fail(res, 400, 'Crie um tópico na estrutura antes de classificar');
-  const result = await classifyNode({ ...items[0], nodes });
+  const projectContext = await projectContextWindow(req.params.projectId, `${items[0].title} ${items[0].summary} ${items[0].location} ${items[0].discipline}`);
+  const result = await classifyNode({ ...items[0], nodes, projectContext });
   if (!result.nodeId) return res.json({ classification: 'needs_confirmation' });
   const [locks] = await db().execute('SELECT node_locked FROM item_organization WHERE item_id=? AND project_id=?', [req.params.itemId, req.params.projectId]);
   if (locks[0]?.node_locked) return res.json({ classification: 'manual' });

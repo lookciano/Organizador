@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { db } from './db.mjs';
 import { structurePaths, summarizeTopicHistory } from './ai.mjs';
+import { loadProjectContext, selectProjectContext } from './project-context.mjs';
 
 const hasModelKey = () => Boolean(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
 const SUMMARY_VERSION = 5;
@@ -22,10 +23,16 @@ function relatedItems(nodes, items) {
   return groups;
 }
 
-function fingerprint(topicPath, items, isMainSection = false, paths = new Map()) {
+function contextQuery(path, items) {
+  return [path, ...items.flatMap((item) => [item.title, item.summary, item.location, item.discipline, item.supplier, item.responsible])].filter(Boolean).join(' ');
+}
+
+function fingerprint(topicPath, items, isMainSection = false, paths = new Map(), projectContext = '') {
   const records = items.map((item) => [item.id, item.node_id, ...(isMainSection ? [paths.get(item.node_id) || ''] : []), item.title, item.summary, item.status, item.responsible, item.supplier, item.due_date, item.attention, item.updated_at, item.update_count || 0]);
   records.sort((a, b) => a[0].localeCompare(b[0]));
-  return createHash('sha256').update(JSON.stringify([isMainSection ? SUMMARY_VERSION + 1 : SUMMARY_VERSION, topicPath, records])).digest('hex');
+  const input = [isMainSection ? SUMMARY_VERSION + 1 : SUMMARY_VERSION, topicPath, records];
+  if (projectContext) input.push(createHash('sha256').update(projectContext).digest('hex'));
+  return createHash('sha256').update(JSON.stringify(input)).digest('hex');
 }
 
 async function generate(nodeId, projectId, revision) {
@@ -61,8 +68,12 @@ async function generate(nodeId, projectId, revision) {
     const paths = new Map(structurePaths(nodes).map((entry) => [entry.id, entry.path]));
     const path = paths.get(nodeId) || node.title;
     for (const item of items) item.node_path = paths.get(item.node_id) || '';
-    const [priorSummaries] = await db().execute('SELECT revision,summary,generated_at FROM topic_summary_history WHERE node_id=? AND project_id=? AND revision<>? ORDER BY generated_at,revision', [nodeId, projectId, revision]);
-    const result = await summarizeTopicHistory({ projectName: projects[0].name, topicPath: path, items, updates, priorSummaries, isMainSection: !node.parent_id });
+    const [[priorSummaries], contextEntries] = await Promise.all([
+      db().execute('SELECT revision,summary,generated_at FROM topic_summary_history WHERE node_id=? AND project_id=? AND revision<>? ORDER BY generated_at,revision', [nodeId, projectId, revision]),
+      loadProjectContext(projectId),
+    ]);
+    const projectContext = selectProjectContext(contextEntries, contextQuery(path, items));
+    const result = await summarizeTopicHistory({ projectName: projects[0].name, topicPath: path, items, updates, priorSummaries, isMainSection: !node.parent_id, projectContext });
     const generatedAt = new Date().toISOString();
     const connection = await db().getConnection();
     try {
@@ -94,7 +105,10 @@ export async function prepareTopicSummaries(projectId, nodes, items) {
   const activeNodes = nodes.filter((node) => !node.archived);
   const paths = new Map(structurePaths(activeNodes).map((node) => [node.id, node.path]));
   const groups = relatedItems(activeNodes, items);
-  const [rows] = await db().execute('SELECT node_id,revision,summary,important_change,analysis_status,analysis_error,generated_at FROM topic_summaries WHERE project_id=?', [projectId]);
+  const [[rows], contextEntries] = await Promise.all([
+    db().execute('SELECT node_id,revision,summary,important_change,analysis_status,analysis_error,generated_at FROM topic_summaries WHERE project_id=?', [projectId]),
+    loadProjectContext(projectId),
+  ]);
   const existing = new Map(rows.map((row) => [row.node_id, row]));
   const result = [];
   const writes = [];
@@ -110,7 +124,9 @@ export async function prepareTopicSummaries(projectId, nodes, items) {
       if (old) writes.push(db().execute('DELETE FROM topic_summaries WHERE node_id=? AND project_id=?', [node.id, projectId]));
       continue;
     }
-    const revision = fingerprint(paths.get(node.id) || node.title, records, !node.parent_id, paths);
+    const topicPath = paths.get(node.id) || node.title;
+    const projectContext = selectProjectContext(contextEntries, contextQuery(topicPath, records));
+    const revision = fingerprint(topicPath, records, !node.parent_id, paths, projectContext);
     const old = existing.get(node.id);
     const retryWithKey = old?.analysis_status === 'needs_key' && hasModelKey();
     const initialStatus = hasModelKey() ? 'pending' : 'needs_key';

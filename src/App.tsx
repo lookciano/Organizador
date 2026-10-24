@@ -9,11 +9,13 @@ type Item = { id: string; node_id: string | null; title: string; summary: string
 type ReviewEntry = { item: Item; excerpts: { id: string; summary: string; evidence: string; created_at: string }[] };
 type Member = { id: string; email: string; role: string };
 type Invitation = { id: string; email: string; role: string; expires_at: string; accepted_at: string | null; created_at: string };
+type ContextEntry = { id: string; title: string; body: string; excerpt: string; file_name: string | null; archived: number; created_at: string; author_email: string | null };
+type MatrixContextRow = { item_id: string; title: string; topic: string; responsible: string; supplier: string; contact: string; action: string; channel: string; frequency: string; evidence: string };
 type Update = { id: string; summary: string; evidence: string; previous_status: string | null; new_status: string; created_at: string; source_title: string | null; author_email: string | null };
 type HistoryEntry = { id: string; item_id: string; summary: string; evidence: string; created_at: string; source_title: string | null; author_email: string | null };
 type TopicSummary = { node_id: string; summary: string; important_change: string; analysis_status: string; analysis_error: string | null; generated_at: string | null };
-type State = { user: User; projects: Project[]; project?: Project; nodes?: Node[]; sources?: Source[]; items?: Item[]; members?: Member[]; invitations?: Invitation[]; topicSummaries?: TopicSummary[] };
-type View = "overview" | "items" | "organize" | "sources" | "structure" | "people" | "reports";
+type State = { user: User; projects: Project[]; project?: Project; nodes?: Node[]; sources?: Source[]; items?: Item[]; members?: Member[]; invitations?: Invitation[]; contextEntries?: ContextEntry[]; topicSummaries?: TopicSummary[] };
+type View = "overview" | "items" | "organize" | "sources" | "context" | "structure" | "people" | "reports";
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, { credentials: "include", ...options, headers: { ...(options?.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...options?.headers } });
@@ -46,6 +48,7 @@ const views: { id: View; label: string; icon: string }[] = [
   { id: "items", label: "Assuntos", icon: "▤" },
   { id: "organize", label: "Organizar", icon: "✎" },
   { id: "sources", label: "Conversa", icon: "▧" },
+  { id: "context", label: "Contexto", icon: "✦" },
   { id: "structure", label: "Estrutura", icon: "⌘" },
   { id: "people", label: "Usuários", icon: "♙" },
   { id: "reports", label: "Matrizes e PDF", icon: "▣" },
@@ -164,9 +167,10 @@ export default function App() {
         {view === "items" && <ItemsView items={items} nodes={nodes} onOpen={openItem} onManual={() => setShowManual(true)} />}
         {view === "organize" && <OrganizeView projectId={projectId} items={items} nodes={nodes} sources={sources} sourceId={reviewSourceId} onSourceChange={setReviewSourceId} onDirtyChange={setReviewDirty} onRefresh={after} onOpen={openItem} setError={setError} />}
         {view === "sources" && <SourcesView sources={sources} projectId={projectId} onRefresh={after} onReview={(id) => { setReviewSourceId(id); setView("organize"); }} setError={setError} focusSignal={composerFocus} />}
+        {view === "context" && <ContextView key={projectId} entries={state.contextEntries || []} projectId={projectId} owner={project.role === "owner"} onRefresh={after} setError={setError} />}
         {view === "structure" && <StructureView nodes={nodes} projectId={projectId} owner={project.role === "owner"} onRefresh={after} setError={setError} />}
         {view === "people" && <PeopleView members={state.members || []} invitations={state.invitations || []} projectId={projectId} owner={project.role === "owner"} onRefresh={after} setError={setError} />}
-        {view === "reports" && <ReportsView items={items} nodes={nodes} project={project} />}
+        {view === "reports" && <ReportsView items={items} nodes={nodes} project={project} contextCount={(state.contextEntries || []).filter((entry) => !entry.archived).length} />}
       </div>}
     </main>
     {showManual && project && <ManualModal projectId={projectId} nodes={nodes} close={() => setShowManual(false)} onDone={async (message) => { await after(message); setView("overview"); }} setError={setError} />}
@@ -610,6 +614,65 @@ function StructureView({ nodes, projectId, owner, onRefresh, setError }: { nodes
   return <><div className="page-heading"><div><div className="eyebrow">ORGANIZAÇÃO FLEXÍVEL</div><h1>Estrutura do projeto</h1><p>Use o modelo como ponto de partida. Categorias novas e renomeadas não apagam o histórico.</p></div><span className="subtle-tag">{nodes.filter((node) => !node.archived).length} categorias ativas</span></div><div className="panel structure-spreadsheet"><div><strong>Editar a estrutura em planilha</strong><p>Baixe o CSV, abra no Excel, edite título, código do tópico superior, ordem ou arquivado (0 ou 1). Para criar um tópico, adicione uma linha com código novo e deixe o ID vazio. Preserve todas as linhas e os IDs existentes.</p></div><div className="structure-spreadsheet-actions"><button className="button secondary" type="button" onClick={() => void exportCsv()}>↓ Baixar planilha</button>{owner && <><button className="button secondary" type="button" onClick={() => fileRef.current?.click()} disabled={importing}>↑ Enviar planilha</button><input ref={fileRef} type="file" accept=".csv,text/csv" hidden onChange={(event) => void readCsv(event.target.files?.[0])} /></>}</div>{preview && <div className="structure-preview"><strong>{preview.changes.length} alteração(ões) em {preview.total} tópico(s)</strong><div className="structure-preview-list">{preview.changes.slice(0, 20).map((change) => <p key={change.code}>{change.code} · {change.title} — {change.kind}</p>)}{preview.changes.length > 20 && <p>Mais {preview.changes.length - 20} alterações.</p>}</div><button className="button primary" type="button" disabled={importing || !preview.changes.length} onClick={() => void applyCsv()}>{importing ? "Importando..." : "Confirmar alterações"}</button><button className="button ghost" type="button" onClick={() => { setPreview(null); setCsv(""); }}>Cancelar</button></div>}</div>{owner && <form className="panel add-node" onSubmit={async (event) => { event.preventDefault(); try { await post(`/api/projects/${projectId}/nodes`, { title: newTitle, parentId: parentId || null }); setNewTitle(""); setParentId(""); await onRefresh("Categoria criada"); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao criar categoria"); } }}><div><strong>Adicionar categoria</strong><p>Crie uma seção principal ou selecione uma categoria superior.</p></div><input id="new-node-title" value={newTitle} onChange={(event) => setNewTitle(event.target.value)} placeholder="Nome da categoria" required /><select value={parentId} onChange={(event) => setParentId(event.target.value)}><option value="">Seção principal</option>{nodes.filter((node) => !node.archived).map((node) => <option key={node.id} value={node.id}>{node.title}</option>)}</select><button className="button primary">Adicionar</button></form>}<div className="panel structure-list"><div className="structure-header">ESTRUTURA ATUAL</div>{children(null).map((node) => renderNode(node, 0))}{!nodes.length && <Empty icon="⌘" title="Estrutura em branco" text="Adicione a primeira seção para organizar o projeto." />}</div></>;
 }
 
+function ContextView({ entries, projectId, owner, onRefresh, setError }: { entries: ContextEntry[]; projectId: string; owner: boolean; onRefresh: (message?: string) => Promise<void>; setError: (value: string) => void }) {
+  const [body, setBody] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [workingId, setWorkingId] = useState("");
+  const [expanded, setExpanded] = useState<string[]>([]);
+  const [fullText, setFullText] = useState<Record<string, string>>({});
+  const [showArchived, setShowArchived] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const active = entries.filter((entry) => !entry.archived);
+  const visible = showArchived ? entries : active;
+  const send = async () => {
+    if (saving || (!body.trim() && !file)) return;
+    setSaving(true);
+    try {
+      let fileData = "";
+      if (file) {
+        if (file.size > 5 * 1024 * 1024) throw new Error("O documento deve ter até 5 MB");
+        fileData = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+          reader.onerror = () => reject(new Error("Falha ao ler o documento"));
+          reader.readAsDataURL(file);
+        });
+      }
+      const extension = file?.name.toLowerCase().split(".").pop() || "";
+      const fallbackMime: Record<string, string> = { pdf: "application/pdf", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", txt: "text/plain", md: "text/markdown" };
+      await post(`/api/projects/${projectId}/context`, { body: body.trim(), fileName: file?.name, contentType: file?.type || fallbackMime[extension] || "", fileData });
+      setBody(""); setFile(null); if (fileRef.current) fileRef.current.value = "";
+      await onRefresh("Contexto registrado. A IA usará essa informação nas próximas análises e sínteses.");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao salvar o contexto"); }
+    finally { setSaving(false); }
+  };
+  const toggle = async (entry: ContextEntry) => {
+    if (expanded.includes(entry.id)) { setExpanded((current) => current.filter((id) => id !== entry.id)); return; }
+    setExpanded((current) => [...current, entry.id]);
+    if (entry.file_name && !fullText[entry.id]) {
+      try {
+        const result = await api<{ entry: { extracted_text: string } }>(`/api/projects/${projectId}/context/${entry.id}`);
+        setFullText((current) => ({ ...current, [entry.id]: result.entry.extracted_text }));
+      } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao abrir o contexto"); }
+    }
+  };
+  const archive = async (entry: ContextEntry) => {
+    setWorkingId(entry.id);
+    try {
+      await post(`/api/projects/${projectId}/context/${entry.id}`, { archived: !entry.archived }, "PATCH");
+      await onRefresh(entry.archived ? "Contexto reativado" : "Contexto arquivado");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao alterar o contexto"); }
+    finally { setWorkingId(""); }
+  };
+  return <div className="context-page"><div className="page-heading"><div><div className="eyebrow">REFERÊNCIAS DO PROJETO</div><h1>Contexto do projeto</h1><p>Registre contratos, fabricantes, fornecedores, pessoas, funções e outras relações duradouras. Acrescente novas informações conforme o projeto avançar.</p></div><span className="subtle-tag">{active.length} registro(s) ativo(s)</span></div>
+    <form className="panel context-composer" onSubmit={(event) => { event.preventDefault(); void send(); }}><label htmlFor="project-context-text">Adicionar informação ao contexto</label><textarea id="project-context-text" rows={5} value={body} onChange={(event) => setBody(event.target.value)} maxLength={30000} placeholder="Ex.: O contrato de fornecimento dos reatores de Ourolândia foi fechado com a fabricante X. Maria será a interlocutora técnica." /><div className="context-composer-actions"><input ref={fileRef} type="file" accept=".pdf,.docx,.txt,.md" hidden onChange={(event) => setFile(event.target.files?.[0] || null)} /><button type="button" className="button secondary" onClick={() => fileRef.current?.click()}>＋ Anexar documento</button>{file && <span className="context-attachment">▧ {file.name}<button type="button" onClick={() => { setFile(null); if (fileRef.current) fileRef.current.value = ""; }} aria-label="Remover anexo">×</button></span>}<button className="button primary" disabled={saving || (!body.trim() && !file)}>{saving ? "Salvando..." : "Adicionar ao contexto"}</button></div><small>PDF com texto selecionável, DOCX, TXT ou Markdown · até 5 MB. Cada acréscimo fica registrado com data e autor.</small></form>
+    <div className="context-list-heading"><h2>Histórico do contexto</h2>{entries.some((entry) => entry.archived) && <label><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /> Mostrar arquivados</label>}</div>
+    {!visible.length && <div className="panel"><Empty icon="✦" title="Ainda não há contexto registrado" text="Escreva uma informação ou anexe um documento para ajudar a IA a interpretar o projeto." /></div>}
+    <div className="context-list">{visible.map((entry) => <article className={`panel context-card${entry.archived ? " archived" : ""}`} key={entry.id}><div className="context-card-top"><div><strong>{entry.title}</strong><small>{dateTime(entry.created_at)} · {entry.author_email || "Participante"}{entry.archived ? " · Arquivado" : ""}</small></div>{owner && <button type="button" disabled={workingId === entry.id} onClick={() => void archive(entry)}>{workingId === entry.id ? "Salvando..." : entry.archived ? "Reativar" : "Arquivar"}</button>}</div>{entry.body && <p>{entry.body.length > 650 && !expanded.includes(entry.id) ? `${entry.body.slice(0, 650)}…` : entry.body}</p>}{entry.file_name && <a href={`/api/projects/${projectId}/context/${entry.id}/file`} className="context-file">▧ {entry.file_name} · Baixar</a>}{entry.file_name && <p className="context-excerpt">{expanded.includes(entry.id) ? fullText[entry.id] || "Carregando texto do documento..." : `${entry.excerpt || ""}${entry.excerpt?.length >= 1200 ? "…" : ""}`}</p>}{(entry.file_name || entry.body.length > 650) && <button type="button" className="context-expand" onClick={() => void toggle(entry)}>{expanded.includes(entry.id) ? "Mostrar menos" : "Ler conteúdo completo"}</button>}</article>)}</div>
+  </div>;
+}
+
 function PeopleView({ members, invitations, projectId, owner, onRefresh, setError }: { members: Member[]; invitations: Invitation[]; projectId: string; owner: boolean; onRefresh: (message?: string) => Promise<void>; setError: (value: string) => void }) {
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
@@ -668,8 +731,12 @@ function PeopleView({ members, invitations, projectId, owner, onRefresh, setErro
   </>;
 }
 
-function ReportsView({ items, nodes, project }: { items: Item[]; nodes: Node[]; project: Project }) {
+function ReportsView({ items, nodes, project, contextCount }: { items: Item[]; nodes: Node[]; project: Project; contextCount: number }) {
   const [kind, setKind] = useState("general"); const [filter, setFilter] = useState(""); const [period, setPeriod] = useState<"today" | "week">("today");
+  const [matrixAnalysis, setMatrixAnalysis] = useState<{ kind: string; filter: string; rows: MatrixContextRow[]; generatedAt: string } | null>(null);
+  const [matrixBusy, setMatrixBusy] = useState(false);
+  const [matrixError, setMatrixError] = useState("");
+  useEffect(() => { setMatrixAnalysis(null); setMatrixError(""); }, [project.id, contextCount, items]);
   const [itemHistory, setItemHistory] = useState<Record<string, HistoryEntry[]>>({});
   const [historyError, setHistoryError] = useState(false);
   useEffect(() => {
@@ -698,7 +765,17 @@ function ReportsView({ items, nodes, project }: { items: Item[]; nodes: Node[]; 
   const list = filter ? items.filter((item) => belongsToCategory(item.node_id)) : items;
   const byResponsible = list.reduce<Record<string, Item[]>>((groups, item) => { const key = item.responsible || "Não atribuído"; (groups[key] ||= []).push(item); return groups; }, {});
   const byPartner = list.reduce<Record<string, Item[]>>((groups, item) => { const key = item.supplier || "Não identificado"; (groups[key] ||= []).push(item); return groups; }, {});
-  return <><div className="page-heading"><div><div className="eyebrow">SAÍDAS DO PROJETO</div><h1>Relatórios e matrizes</h1><p>Visões geradas a partir dos assuntos e suas fontes registradas.</p></div><button className="button secondary" onClick={() => window.print()}>Imprimir / salvar PDF ↗</button></div><div className="report-controls"><label>Tipo de relatório<select value={kind} onChange={(event) => setKind(event.target.value)}><option value="general">Acompanhamento geral</option><option value="responsibility">Matriz de responsabilidades</option><option value="communication">Matriz de comunicação</option><option value="subject">Relatório por assunto</option><option value="recent">Últimas atualizações</option></select></label><label>Categoria<select value={filter} onChange={(event) => setFilter(event.target.value)}><option value="">Todas as categorias</option>{nodes.filter((node) => !node.archived).map((node) => <option value={node.id} key={node.id}>{node.title}</option>)}</select></label>{kind === "recent" && <label>Período<select value={period} onChange={(event) => setPeriod(event.target.value as "today" | "week")}><option value="today">Hoje</option><option value="week">Últimos 7 dias</option></select></label>}</div><article className="panel report"><div className="report-title"><span>RELATÓRIO DO PROJETO</span><h2>{project.name}</h2><p>Gerado em {new Date().toLocaleString("pt-BR")} · {list.length} assunto(s)</p></div>{historyError && <p className="report-history-error">Não foi possível carregar o histórico anterior; tente atualizar a página.</p>}{kind === "general" && <><div className="report-summary"><span><strong>{list.filter((item) => item.status !== "concluido").length}</strong> em acompanhamento</span><span><strong>{list.filter(isOverdue).length}</strong> atrasados</span><span><strong>{list.filter((item) => item.attention).length}</strong> pontos de atenção</span></div>{list.map((item) => <div className="report-entry" key={item.id}><div><h3>{item.title}</h3><Status item={item} /></div><p>{item.summary || "Sem resumo"}</p><small>{[item.location, item.discipline, item.supplier && `Fornecedor: ${item.supplier}`, item.responsible && `Responsável: ${item.responsible}`, item.due_date && `Prazo: ${date(item.due_date)}`].filter(Boolean).join(" · ")}</small><small>Última atualização em {date(item.latest_update_at || item.updated_at)}: {item.latest_update || item.summary || "Sem resumo"}</small><small>{item.update_count || 0} registro(s) no histórico · Fonte mais recente: {item.source_title || "Registro manual"}</small>{(itemHistory[item.id] || []).length > 1 && <div className="report-history"><strong>Atualizações anteriores</strong>{itemHistory[item.id].slice(1, 3).map((update, index) => <p key={`${update.created_at}-${index}`}><time>{date(update.created_at)}</time> · {update.summary}{update.source_title && <span> · Fonte: {update.source_title}</span>}</p>)}</div>}</div>)}</>}{kind === "responsibility" && Object.entries(byResponsible).map(([responsible, group]) => <div className="report-group" key={responsible}><h3>{responsible}</h3><ReportTable items={group || []} /></div>)}{kind === "communication" && <><p className="report-note">Esta matriz reúne interlocutores citados nas fontes. Canal e frequência de contato devem ser definidos pelo grupo.</p>{Object.entries(byPartner).map(([partner, group]) => <div className="report-group" key={partner}><h3>{partner}</h3><table><thead><tr><th>Assunto</th><th>Responsável</th><th>Situação</th><th>Última atualização</th></tr></thead><tbody>{(group || []).map((item) => <tr key={item.id}><td>{item.title}</td><td>{item.responsible || "A definir"}</td><td>{statusName[item.status]}</td><td>{date(item.updated_at)}</td></tr>)}</tbody></table></div>)}</>}{kind === "subject" && <ReportTable items={list} />}{kind === "recent" && <RecentUpdatesReport items={list} nodes={nodes} history={itemHistory} period={period} historyError={historyError} />}{kind !== "recent" && !list.length && <Empty icon="▣" title="Sem dados para este relatório" text="Registre informações ou altere o filtro para gerar a visão." />}</article></>;
+  const currentAnalysis = matrixAnalysis?.kind === kind && matrixAnalysis.filter === filter ? matrixAnalysis : null;
+  const analyzeMatrix = async () => {
+    setMatrixBusy(true); setMatrixError("");
+    try {
+      const result = await post<{ rows: MatrixContextRow[]; generatedAt: string }>(`/api/projects/${project.id}/matrix/analyze`, { kind, nodeId: filter });
+      setMatrixAnalysis({ kind, filter, ...result });
+    } catch (cause) { setMatrixError(cause instanceof Error ? cause.message : "Falha ao analisar a matriz"); }
+    finally { setMatrixBusy(false); }
+  };
+  const matrixPanel = (kind === "responsibility" || kind === "communication") && <section className="matrix-context"><div className="matrix-context-head"><div><h3>Análise com contexto do projeto</h3><p>A IA consulta o contexto e os assuntos atuais para sugerir relações entre ações, responsáveis, fornecedores e interlocutores. Confira as sugestões antes de utilizá-las.</p></div><button type="button" className="button secondary" disabled={matrixBusy || !list.length} onClick={() => void analyzeMatrix()}>{matrixBusy ? "Analisando..." : currentAnalysis ? "Atualizar análise" : "Analisar com contexto"}</button></div>{!contextCount && <p className="matrix-context-hint">Adicione fatos e documentos em Contexto para tornar a análise mais precisa.</p>}{matrixError && <p className="report-history-error">{matrixError}</p>}{currentAnalysis && <><small>Análise gerada em {dateTime(currentAnalysis.generatedAt)} · {currentAnalysis.rows.length} assunto(s)</small><div className="matrix-context-table"><table><thead><tr><th>Assunto / tópico</th><th>Responsável e ação</th><th>Fornecedor / contato</th><th>Comunicação e apoio</th></tr></thead><tbody>{currentAnalysis.rows.map((row) => <tr key={row.item_id}><td><strong>{row.title}</strong><small>{row.topic}</small></td><td>{row.responsible || "A definir"}{row.action && <small>Ação: {row.action}</small>}</td><td>{row.supplier || "Não identificado"}{row.contact && <small>Contato: {row.contact}</small>}</td><td>{row.channel && <small>Canal: {row.channel}</small>}{row.frequency && <small>Frequência: {row.frequency}</small>}{row.evidence && <small>Trecho de apoio: “{row.evidence}”</small>}{!row.channel && !row.frequency && !row.evidence && "A definir"}</td></tr>)}</tbody></table></div></>}</section>;
+  return <><div className="page-heading"><div><div className="eyebrow">SAÍDAS DO PROJETO</div><h1>Relatórios e matrizes</h1><p>Visões geradas a partir dos assuntos e suas fontes registradas.</p></div><button className="button secondary" onClick={() => window.print()}>Imprimir / salvar PDF ↗</button></div><div className="report-controls"><label>Tipo de relatório<select value={kind} onChange={(event) => setKind(event.target.value)}><option value="general">Acompanhamento geral</option><option value="responsibility">Matriz de responsabilidades</option><option value="communication">Matriz de comunicação</option><option value="subject">Relatório por assunto</option><option value="recent">Últimas atualizações</option></select></label><label>Categoria<select value={filter} onChange={(event) => setFilter(event.target.value)}><option value="">Todas as categorias</option>{nodes.filter((node) => !node.archived).map((node) => <option value={node.id} key={node.id}>{node.title}</option>)}</select></label>{kind === "recent" && <label>Período<select value={period} onChange={(event) => setPeriod(event.target.value as "today" | "week")}><option value="today">Hoje</option><option value="week">Últimos 7 dias</option></select></label>}</div>{matrixPanel}<article className="panel report"><div className="report-title"><span>RELATÓRIO DO PROJETO</span><h2>{project.name}</h2><p>Gerado em {new Date().toLocaleString("pt-BR")} · {list.length} assunto(s)</p></div>{historyError && <p className="report-history-error">Não foi possível carregar o histórico anterior; tente atualizar a página.</p>}{kind === "general" && <><div className="report-summary"><span><strong>{list.filter((item) => item.status !== "concluido").length}</strong> em acompanhamento</span><span><strong>{list.filter(isOverdue).length}</strong> atrasados</span><span><strong>{list.filter((item) => item.attention).length}</strong> pontos de atenção</span></div>{list.map((item) => <div className="report-entry" key={item.id}><div><h3>{item.title}</h3><Status item={item} /></div><p>{item.summary || "Sem resumo"}</p><small>{[item.location, item.discipline, item.supplier && `Fornecedor: ${item.supplier}`, item.responsible && `Responsável: ${item.responsible}`, item.due_date && `Prazo: ${date(item.due_date)}`].filter(Boolean).join(" · ")}</small><small>Última atualização em {date(item.latest_update_at || item.updated_at)}: {item.latest_update || item.summary || "Sem resumo"}</small><small>{item.update_count || 0} registro(s) no histórico · Fonte mais recente: {item.source_title || "Registro manual"}</small>{(itemHistory[item.id] || []).length > 1 && <div className="report-history"><strong>Atualizações anteriores</strong>{itemHistory[item.id].slice(1, 3).map((update, index) => <p key={`${update.created_at}-${index}`}><time>{date(update.created_at)}</time> · {update.summary}{update.source_title && <span> · Fonte: {update.source_title}</span>}</p>)}</div>}</div>)}</>}{kind === "responsibility" && Object.entries(byResponsible).map(([responsible, group]) => <div className="report-group" key={responsible}><h3>{responsible}</h3><ReportTable items={group || []} /></div>)}{kind === "communication" && <><p className="report-note">Esta matriz reúne interlocutores citados nas fontes. Canal e frequência de contato devem ser definidos pelo grupo.</p>{Object.entries(byPartner).map(([partner, group]) => <div className="report-group" key={partner}><h3>{partner}</h3><table><thead><tr><th>Assunto</th><th>Responsável</th><th>Situação</th><th>Última atualização</th></tr></thead><tbody>{(group || []).map((item) => <tr key={item.id}><td>{item.title}</td><td>{item.responsible || "A definir"}</td><td>{statusName[item.status]}</td><td>{date(item.updated_at)}</td></tr>)}</tbody></table></div>)}</>}{kind === "subject" && <ReportTable items={list} />}{kind === "recent" && <RecentUpdatesReport items={list} nodes={nodes} history={itemHistory} period={period} historyError={historyError} />}{kind !== "recent" && !list.length && <Empty icon="▣" title="Sem dados para este relatório" text="Registre informações ou altere o filtro para gerar a visão." />}</article></>;
 }
 
 function RecentUpdatesReport({ items, nodes, history, period, historyError }: { items: Item[]; nodes: Node[]; history: Record<string, HistoryEntry[]>; period: "today" | "week"; historyError: boolean }) {
