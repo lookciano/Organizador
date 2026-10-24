@@ -221,7 +221,7 @@ function CategoryQuestion({ item, projectId, options, onRefresh }: { item: Item;
   }}>{busy ? "Analisando..." : "Tentar identificar com IA"}</button></div>{info && <small>{info}</small>}{error && <small role="alert">{error}</small>}</form>;
 }
 
-function TopicSynthesis({ value, onRetry }: { value?: TopicSummary; onRetry: () => Promise<void> }) {
+function TopicSynthesis({ value, onRetry, isMainSection = false }: { value?: TopicSummary; onRetry: () => Promise<void>; isMainSection?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const updating = ["pending", "processing"].includes(value?.analysis_status || "");
@@ -233,8 +233,8 @@ function TopicSynthesis({ value, onRetry }: { value?: TopicSummary; onRetry: () 
     else if (line.trim()) points.push({ text: line.replace(/^\s*[•\-*]\s*/, "").trim(), locations: [] });
   }
   const bulletSummary = Boolean(value?.summary && /^[•\-*]\s/.test(value.summary));
-  return <div className="live-topic-synthesis">
-    <div className="live-synthesis-heading"><strong>SÍNTESE DO TÓPICO</strong><small>{updating ? "Atualizando síntese..." : value?.generated_at ? `Gerada em ${dateTime(value.generated_at)}` : ""}</small></div>
+  return <div className={`live-topic-synthesis${isMainSection ? " live-main-section-synthesis" : ""}`}>
+    <div className="live-synthesis-heading"><strong>{isMainSection ? "SÍNTESE GERAL DA SEÇÃO · POR SUBESTAÇÃO" : "SÍNTESE DO TÓPICO"}</strong><small>{updating ? "Atualizando síntese..." : value?.generated_at ? `Gerada em ${dateTime(value.generated_at)}` : ""}</small></div>
     {value?.summary ? bulletSummary ? <ul className="live-synthesis-points">{points.map((point, index) => <li key={index}>{point.text}{point.locations.length > 0 && <ul className="live-synthesis-locations">{point.locations.map((location, locationIndex) => <li key={locationIndex}>{location}</li>)}</ul>}</li>)}</ul> : <p>{value.summary}</p> : <p className="live-synthesis-placeholder">{unavailable ? "Síntese ainda indisponível." : "Analisando o histórico deste tópico..."}</p>}
     {value?.important_change && <div className="live-synthesis-change"><strong>Mudança relevante</strong><p>{value.important_change}</p></div>}
     {unavailable && <div className="live-synthesis-error"><span>Não foi possível atualizar a síntese.</span><button disabled={busy} onClick={async () => { setBusy(true); setError(""); try { await onRetry(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao tentar novamente"); } finally { setBusy(false); } }}>{busy ? "Tentando..." : "Tentar novamente"}</button>{error && <span role="alert">{error}</span>}</div>}
@@ -371,7 +371,7 @@ function LivingReportView({ project, items, nodes, topicSummaries, syncedAt, onR
     const synthesis = summaryByNode.get(node.id);
     return <section className={`live-node live-depth-${Math.min(depth, 2)}`} id={`topico-${node.id}`} key={node.id}>
       <div className="live-node-heading">{depth === 0 && <span className="live-section-number">{String(sectionNumber || 1).padStart(2, "0")}</span>}<div>{title}{depth === 0 && <small>{total} assunto(s) com informação</small>}</div></div>
-      {total > 0 && <TopicSynthesis value={synthesis} onRetry={async () => { await post(`/api/projects/${project.id}/topics/${node.id}/summary/retry`, {}); await onRefresh(); }} />}
+      {total > 0 && <TopicSynthesis value={synthesis} isMainSection={depth === 0} onRetry={async () => { await post(`/api/projects/${project.id}/topics/${node.id}/summary/retry`, {}); await onRefresh(); }} />}
       <TopicQuickUpdate projectId={project.id} node={node} onRefresh={onRefresh} />
       {total > 0 && <button type="button" className="live-history-toggle" aria-expanded={historyOpen} aria-label={`${historyOpen ? "Ocultar" : "Ver"} histórico e fontes de ${node.title}`} onClick={() => toggleHistory(node.id)}><span aria-hidden="true">{historyOpen ? "⌃" : "⌄"}</span>{historyOpen ? "Ocultar histórico e fontes" : "Ver histórico e fontes"}<small>{total} assunto(s)</small></button>}
       {expandedHistoryNodes.has(node.id) && direct.map((item) => topic(item))}

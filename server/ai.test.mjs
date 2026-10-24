@@ -165,6 +165,55 @@ test('nova síntese recebe a síntese anterior e os registros originais para con
   });
 });
 
+test('síntese da seção principal organiza subestações pela última informação e mantém fatos gerais separados', async () => {
+  await mockAnalysis({ bullets: [
+    { item_id: 'ouro', text: '', locations: [{ name: 'Ourolândia', text: 'A inspeção segue pendente; Ana deve agendar a equipe.' }] },
+    { item_id: 'ibi', text: '', locations: [{ name: 'Ibicoara', text: 'Teste concluído em 24/10; Bruno deve enviar o laudo.' }] },
+    { item_id: 'geral', text: 'Definir responsáveis pelo plano geral.', locations: [] },
+  ], important_change: '', changed_item_id: '', change_before: '', change_after: '' }, async (request) => {
+    const result = await summarizeTopicHistory({
+      projectName: 'Teste', topicPath: 'Startup e Comissionamento', isMainSection: true,
+      items: [
+        { id: 'ouro', title: 'Inspeção', location: 'Ourolândia', created_at: '2026-10-21T12:00:00Z', updated_at: '2026-10-22T12:00:00Z', status: 'pendente', summary: 'Inspeção pendente.', responsible: 'Ana', supplier: '', due_date: '', attention: 0 },
+        { id: 'ibi', title: 'Teste', location: 'Ibicoara', created_at: '2026-10-22T12:00:00Z', updated_at: '2026-10-24T12:00:00Z', status: 'concluido', summary: 'Teste concluído.', responsible: 'Bruno', supplier: '', due_date: '', attention: 0 },
+        { id: 'geral', title: 'Plano geral', location: '', created_at: '2026-10-23T12:00:00Z', updated_at: '2026-10-23T12:00:00Z', status: 'pendente', summary: 'Plano geral.', responsible: '', supplier: '', due_date: '', attention: 0 },
+      ],
+      updates: [
+        { id: '1', item_id: 'ouro', created_at: '2026-10-22T12:00:00Z', summary: 'Ourolândia: inspeção pendente.', evidence: '', new_status: 'pendente', source_title: 'Ata' },
+        { id: '2', item_id: 'ibi', created_at: '2026-10-24T12:00:00Z', summary: 'Ibicoara: teste concluído.', evidence: '', new_status: 'concluido', source_title: 'Ata' },
+        { id: '3', item_id: 'geral', created_at: '2026-10-23T12:00:00Z', summary: 'Plano geral em preparação.', evidence: '', new_status: 'pendente', source_title: 'Ata' },
+      ],
+    });
+    assert.match(request().input[0].content, /ITEM PRINCIPAL/);
+    assert.ok(result.summary.indexOf('Subestação Ibicoara') < result.summary.indexOf('Subestação Ourolândia'));
+    assert.ok(result.summary.indexOf('Subestação Ourolândia') < result.summary.indexOf('Informações gerais'));
+    assert.match(result.summary, /Subestação Ibicoara — última informação em 24\/10\/2026/);
+    assert.match(result.summary, /Bruno deve enviar o laudo/);
+    assert.match(result.summary, /Definir responsáveis pelo plano geral/);
+    assert.doesNotMatch(result.summary.split('• Subestação Ibicoara')[1].split('• Subestação Ourolândia')[0], /inspeção segue pendente/);
+  });
+});
+
+test('assunto com várias subestações usa a data de cada local sem copiar a data do outro', async () => {
+  await mockAnalysis({ bullets: [{ item_id: 'multi', text: '', locations: [
+    { name: 'Ourolândia', text: 'Aguardando liberação de acesso.' },
+    { name: 'Ibicoara', text: 'Testes de proteção concluídos.' },
+  ] }], important_change: '', changed_item_id: '', change_before: '', change_after: '' }, async () => {
+    const result = await summarizeTopicHistory({
+      projectName: 'Teste', topicPath: 'Comissionamento', isMainSection: true,
+      items: [{ id: 'multi', title: 'Acompanhamento de testes', location: 'Ourolândia, Ibicoara', created_at: '2026-10-21T12:00:00Z', updated_at: '2026-10-24T12:00:00Z', status: 'em_andamento', summary: 'Atualização por local.', responsible: '', supplier: '', due_date: '', attention: 0 }],
+      updates: [
+        { id: '1', item_id: 'multi', created_at: '2026-10-21T12:00:00Z', summary: 'Ourolândia aguarda acesso.', evidence: '', new_status: 'em_andamento', source_title: 'Ata' },
+        { id: '2', item_id: 'multi', created_at: '2026-10-24T12:00:00Z', summary: 'Ibicoara concluiu os testes.', evidence: '', new_status: 'em_andamento', source_title: 'Ata' },
+      ],
+    });
+    assert.match(result.summary, /Subestação Ibicoara — última informação em 24\/10\/2026/);
+    assert.match(result.summary, /Subestação Ourolândia — última informação em 21\/10\/2026/);
+    assert.ok(result.summary.indexOf('Subestação Ibicoara') < result.summary.indexOf('Subestação Ourolândia'));
+    assert.doesNotMatch(result.summary.split('• Subestação Ibicoara')[1].split('• Subestação Ourolândia')[0], /liberação de acesso/);
+  });
+});
+
 test('síntese inclui um ponto para todo assunto mesmo quando a IA deixa algum de fora', async () => {
   await mockAnalysis({ bullets: [{ item_id: 'a', text: 'Entrega do equipamento ainda pendente.' }], important_change: '', changed_item_id: '', change_before: '', change_after: '' }, async () => {
     const result = await summarizeTopicHistory({
