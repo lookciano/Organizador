@@ -70,7 +70,7 @@ async function requestAnalysis({ system, content, schema, name, maxOutputTokens 
       ...(useOpenRouter ? { 'X-OpenRouter-Title': 'Organizador Grande Sertão' } : {}),
     },
     body: JSON.stringify({
-      model: useOpenRouter ? (process.env.OPENROUTER_MODEL || 'openai/gpt-4.1-mini') : (process.env.OPENAI_MODEL || 'gpt-4.1-mini'),
+      model: useOpenRouter ? (process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4.1-flash') : (process.env.OPENAI_MODEL || 'gpt-4.1-mini'),
       store: false,
       max_output_tokens: maxOutputTokens,
       input: [{ role: 'system', content: system }, { role: 'user', content }],

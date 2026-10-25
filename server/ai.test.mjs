@@ -42,6 +42,20 @@ test('registro manual envia caminhos completos e aceita a classificação segura
   });
 });
 
+test('OpenRouter usa DeepSeek V4.1 Flash como modelo padrão', async () => {
+  const previous = process.env.OPENROUTER_MODEL;
+  delete process.env.OPENROUTER_MODEL;
+  try {
+    await mockAnalysis({ node_id: 'ouro-cub', confidence: 0.95, reason: 'Cubículo' }, async (request) => {
+      await classifyNode({ title: 'Cubículo', summary: 'Entrega em andamento', nodes });
+      assert.equal(request().model, 'deepseek/deepseek-v4.1-flash');
+    });
+  } finally {
+    if (previous === undefined) delete process.env.OPENROUTER_MODEL;
+    else process.env.OPENROUTER_MODEL = previous;
+  }
+});
+
 test('classificação duvidosa aguarda confirmação humana', async () => {
   await mockAnalysis({ node_id: 'ouro-cub', confidence: 0.54, reason: 'Apenas a localidade foi citada' }, async () => {
     const result = await classifyNode({ title: 'Ourolândia', summary: 'Acompanhamento', nodes });

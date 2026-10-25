@@ -20,7 +20,7 @@ services:
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_MODEL
-        value: openai/gpt-4.1-mini
+        value: deepseek/deepseek-v4.1-flash
       - key: SMTP_HOST
         sync: false
       - key: SMTP_PORT
