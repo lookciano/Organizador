@@ -89,11 +89,28 @@ async function requestAnalysis({ system, content, schema, name, maxOutputTokens 
     }
     if (!response.ok) {
       const details = await response.text();
+      if (attempt === 0 && [408, 429, 500, 502, 503, 504].includes(response.status)) {
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        continue;
+      }
       throw new Error(`Falha na análise (${response.status}): ${details.slice(0, 240)}`);
     }
-    const result = await response.json();
+    let result;
+    try {
+      result = await response.json();
+    } catch (error) {
+      if (attempt === 0) continue;
+      throw new Error(`A IA interrompeu a resposta de ${name}: ${error.message}`);
+    }
     const raw = outputText(result);
-    if (result.error) throw new Error(`Falha na análise: ${String(result.error.message || result.error.code || 'erro desconhecido').slice(0, 240)}`);
+    if (result.error) {
+      const message = String(result.error.message || result.error.code || 'erro desconhecido').slice(0, 240);
+      if (attempt === 0 && /stream closed|upstream|timeout|temporar|overload|rate limit|internal error/i.test(message)) {
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        continue;
+      }
+      throw new Error(`Falha na análise: ${message}`);
+    }
     if (result.status === 'incomplete' || !raw.trim()) {
       if (attempt === 0) continue;
       throw new Error(`A IA não concluiu ${name}: ${result.incomplete_details?.reason || 'resposta vazia'} (limite ${outputLimit} tokens)`);

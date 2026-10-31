@@ -230,6 +230,7 @@ function TopicSynthesis({ value, onRetry, isMainSection = false }: { value?: Top
   const [error, setError] = useState("");
   const updating = ["pending", "processing"].includes(value?.analysis_status || "");
   const unavailable = ["failed", "needs_key"].includes(value?.analysis_status || "");
+  const progressLabel = value?.analysis_status === "pending" ? "Na fila para atualizar" : value?.analysis_status === "processing" ? "Analisando o histórico" : "";
   const points: { text: string; locations: string[] }[] = [];
   for (const line of value?.summary?.split(/\r?\n/) || []) {
     const location = line.match(/^\s*◦\s+(.+)$/);
@@ -238,7 +239,7 @@ function TopicSynthesis({ value, onRetry, isMainSection = false }: { value?: Top
   }
   const bulletSummary = Boolean(value?.summary && /^[•\-*]\s/.test(value.summary));
   return <div className={`live-topic-synthesis${isMainSection ? " live-main-section-synthesis" : ""}`}>
-    <div className="live-synthesis-heading"><strong>{isMainSection ? "SÍNTESE GERAL DA SEÇÃO · POR SUBESTAÇÃO" : "SÍNTESE DO TÓPICO"}</strong><small>{updating ? "Atualizando síntese..." : value?.generated_at ? `Gerada em ${dateTime(value.generated_at)}` : ""}</small></div>
+    <div className="live-synthesis-heading"><strong>{isMainSection ? "SÍNTESE GERAL DA SEÇÃO · POR SUBESTAÇÃO" : "SÍNTESE DO TÓPICO"}</strong><small>{updating ? `${progressLabel}${value?.generated_at ? ` · versão anterior: ${dateTime(value.generated_at)}` : ""}` : value?.generated_at ? `Gerada em ${dateTime(value.generated_at)}` : ""}</small></div>
     {value?.summary ? bulletSummary ? <ul className="live-synthesis-points">{points.map((point, index) => <li key={index}>{point.text}{point.locations.length > 0 && <ul className="live-synthesis-locations">{point.locations.map((location, locationIndex) => <li key={locationIndex}>{location}</li>)}</ul>}</li>)}</ul> : <p>{value.summary}</p> : <p className="live-synthesis-placeholder">{unavailable ? "Síntese ainda indisponível." : "Analisando o histórico deste tópico..."}</p>}
     {value?.important_change && <div className="live-synthesis-change"><strong>Mudança relevante</strong><p>{value.important_change}</p></div>}
     {unavailable && <div className="live-synthesis-error"><span>Não foi possível atualizar a síntese.</span><button disabled={busy} onClick={async () => { setBusy(true); setError(""); try { await onRetry(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao tentar novamente"); } finally { setBusy(false); } }}>{busy ? "Tentando..." : "Tentar novamente"}</button>{error && <span role="alert">{error}</span>}</div>}
@@ -342,6 +343,9 @@ function LivingReportView({ project, items, nodes, topicSummaries, syncedAt, onR
   const attentionCount = items.filter((item) => item.attention || item.status === "bloqueado").length;
   const overdueCount = items.filter(isOverdue).length;
   const emptyLeafCount = activeNodes.filter((node) => !(childrenByParent.get(node.id)?.length) && !(itemsByNode.get(node.id)?.length)).length;
+  const queuedSummaries = topicSummaries.filter((summary) => summary.analysis_status === "pending").length;
+  const processingSummaries = topicSummaries.filter((summary) => summary.analysis_status === "processing").length;
+  const completedSummaries = topicSummaries.filter((summary) => summary.analysis_status === "completed").length;
 
   const topic = (item: Item, needsCategory = false) => {
     const allUpdates = itemHistory[item.id] || [];
@@ -385,7 +389,7 @@ function LivingReportView({ project, items, nodes, topicSummaries, syncedAt, onR
   };
 
   return <div className="living-report">
-    <header className="living-header"><div><div className="eyebrow">ATA VIVA · LEITURA COMPLETA</div><h1>{project.name}</h1><p>{project.description || "Acompanhe todos os tópicos do projeto, as pendências e o que mudou em cada assunto."}</p><small>Sincronizado em {dateTime(syncedAt)} · Atualização automática a cada minuto</small></div><div className="living-header-actions"><button className="button secondary" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await onRefresh(); } finally { setRefreshing(false); } }}>{refreshing ? "Atualizando..." : "↻ Atualizar agora"}</button><button className="button secondary" onClick={() => window.print()}>Imprimir / PDF ↗</button></div></header>
+    <header className="living-header"><div><div className="eyebrow">ATA VIVA · LEITURA COMPLETA</div><h1>{project.name}</h1><p>{project.description || "Acompanhe todos os tópicos do projeto, as pendências e o que mudou em cada assunto."}</p><small>Sincronizado em {dateTime(syncedAt)} · Atualização automática</small>{queuedSummaries + processingSummaries > 0 && <div className="report-summary-progress">Sínteses: {completedSummaries} concluídas · {processingSummaries} em análise · {queuedSummaries} na fila. O relatório anterior permanece disponível durante a atualização.</div>}</div><div className="living-header-actions"><button className="button secondary" disabled={refreshing} onClick={async () => { setRefreshing(true); try { await onRefresh(); } finally { setRefreshing(false); } }}>{refreshing ? "Atualizando..." : "↻ Atualizar agora"}</button><button className="button secondary" onClick={() => window.print()}>Imprimir / PDF ↗</button></div></header>
     <div className="living-summary"><span><strong>{items.length}</strong> assuntos registrados</span><span><strong>{openCount}</strong> em acompanhamento</span><span className={overdueCount ? "urgent" : ""}><strong>{overdueCount}</strong> atrasados</span><span className={attentionCount ? "urgent" : ""}><strong>{attentionCount}</strong> pontos de atenção</span>{unclassified.length > 0 && <a href="#topico-sem-categoria" className="category-summary"><strong>{unclassified.length}</strong> aguardando tópico</a>}<span><strong>{emptyLeafCount}</strong> tópicos sem registro</span></div>
     {historyError && <p className="report-history-error">O histórico anterior não carregou. Atualize a página para tentar novamente.</p>}
     <div className="living-layout"><nav className="living-contents" aria-label="Sumário do relatório"><strong>NESTA PÁGINA</strong>{roots.map((root, index) => <div className="living-contents-group" key={root.id}><a href={`#topico-${root.id}`}><span>{String(index + 1).padStart(2, "0")}</span>{root.title}<small>{countUnder(root.id)}</small></a>{(childrenByParent.get(root.id) || []).map((child) => <a className="living-contents-child" href={`#topico-${child.id}`} key={child.id}>{child.title}</a>)}</div>)}{unclassified.length > 0 && <a href="#topico-sem-categoria">Sem categoria <small>{unclassified.length}</small></a>}</nav>

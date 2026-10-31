@@ -126,22 +126,48 @@ test('síntese repete a análise quando o OpenRouter devolve JSON cortado', asyn
   }
 });
 
+test('síntese tenta novamente quando o provedor interrompe a resposta', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    const result = calls === 1 ? { error: { message: 'stream closed with reason: error' } } : { output_text: JSON.stringify({ bullets: [{ item_id: 'a', text: 'Inspeção pendente.', locations: [] }], important_change: '', changed_item_id: '', change_before: '', change_after: '' }) };
+    return { ok: true, json: async () => result };
+  };
+  try {
+    const result = await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Inspeção', items: [{ id: 'a', title: 'Inspeção', updated_at: '2026-10-24T10:00:00Z', status: 'pendente', summary: 'Inspeção pendente.', location: '', responsible: '', supplier: '', due_date: '', attention: 0 }], updates: [] });
+    assert.equal(calls, 2);
+    assert.match(result.summary, /Inspeção pendente/);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
+
 test('síntese extensa limita cada pedido a quatro assuntos sem perder itens', async () => {
   const oldKey = process.env.OPENROUTER_API_KEY;
   const oldFetch = globalThis.fetch;
   process.env.OPENROUTER_API_KEY = 'test-key';
   const requested = [];
+  const prompts = [];
   globalThis.fetch = async (_url, options) => {
     const request = JSON.parse(options.body);
-    const ids = [...request.input[1].content[0].text.matchAll(/ESTADO ATUAL[^\n]*Assunto: Item (\d+)/g)].map((match) => match[1]);
+    const prompt = request.input[1].content[0].text;
+    prompts.push(prompt);
+    const ids = [...prompt.matchAll(/ESTADO ATUAL[^\n]*Assunto: Item (\d+)/g)].map((match) => match[1]);
     requested.push(ids);
     const result = { bullets: ids.map((id) => ({ item_id: id, text: `Síntese do item ${id}.`, locations: [] })), important_change: '', changed_item_id: '', change_before: '', change_after: '' };
     return { ok: true, json: async () => ({ output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(result) }] }] }) };
   };
   try {
     const items = Array.from({ length: 9 }, (_, index) => ({ id: String(index), title: `Item ${index}`, updated_at: '2026-10-24T10:00:00Z', status: 'pendente', summary: `Estado ${index}.`, location: '', responsible: '', supplier: '', due_date: '', attention: 0 }));
-    const result = await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos', items, updates: [] });
+    const updates = items.map((item) => ({ id: `update-${item.id}`, item_id: item.id, created_at: '2026-10-24T09:00:00Z', summary: `Marcador de atualização ${item.id}.`, evidence: '', new_status: 'pendente', source_title: 'Ata' }));
+    const result = await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos', items, updates });
     assert.deepEqual(requested.map((ids) => ids.length), [4, 4, 1]);
+    for (const item of items) assert.match(prompts.join('\n'), new RegExp(`Marcador de atualização ${item.id}\\.`));
     assert.match(result.summary, /Síntese do item 0/);
     assert.match(result.summary, /Síntese do item 8/);
   } finally {

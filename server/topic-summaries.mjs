@@ -6,8 +6,10 @@ import { loadProjectContext, selectProjectContext } from './project-context.mjs'
 const hasModelKey = () => Boolean(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
 const SUMMARY_VERSION = 6;
 const MAIN_SECTION_SUMMARY_VERSION = 8;
-const active = new Map();
-let queue = Promise.resolve();
+const MAX_CONCURRENT_SUMMARIES = 3;
+const active = new Set();
+const waiting = [];
+let running = 0;
 
 function relatedItems(nodes, items) {
   const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -40,6 +42,7 @@ async function generate(nodeId, projectId, revision) {
   const [rows] = await db().execute('SELECT revision,analysis_status FROM topic_summaries WHERE node_id=? AND project_id=?', [nodeId, projectId]);
   if (!rows.length || rows[0].revision !== revision || !['pending', 'processing'].includes(rows[0].analysis_status)) return;
   await db().execute("UPDATE topic_summaries SET analysis_status=? WHERE node_id=? AND revision=? AND analysis_status IN ('pending','processing')", ['processing', nodeId, revision]);
+  const started = Date.now();
   try {
     const [[projects], [nodes]] = await Promise.all([
       db().execute('SELECT name FROM projects WHERE id=?', [projectId]),
@@ -74,6 +77,8 @@ async function generate(nodeId, projectId, revision) {
       loadProjectContext(projectId),
     ]);
     const projectContext = selectProjectContext(contextEntries, contextQuery(path, items));
+    const model = process.env.OPENROUTER_API_KEY ? process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4.1-flash' : process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+    console.info('Iniciando síntese:', nodeId, { modelo: model, assuntos: items.length, registros: updates.length, sintesesAnteriores: priorSummaries.length });
     const result = await summarizeTopicHistory({ projectName: projects[0].name, topicPath: path, items, updates, priorSummaries, isMainSection: !node.parent_id, projectContext });
     const generatedAt = new Date().toISOString();
     const connection = await db().getConnection();
@@ -84,6 +89,7 @@ async function generate(nodeId, projectId, revision) {
       if (saved.affectedRows) await connection.execute('INSERT IGNORE INTO topic_summary_history (node_id,project_id,revision,summary,important_change,generated_at) VALUES (?,?,?,?,?,?)',
         [nodeId, projectId, revision, result.summary, result.importantChange, generatedAt]);
       await connection.commit();
+      console.info('Síntese concluída:', nodeId, { segundos: Math.round((Date.now() - started) / 1000), assuntos: items.length });
     } catch (error) { await connection.rollback(); throw error; }
     finally { connection.release(); }
   } catch (error) {
@@ -97,9 +103,23 @@ async function generate(nodeId, projectId, revision) {
 function schedule(nodeId, projectId, revision) {
   const key = `${projectId}:${nodeId}:${revision}`;
   if (active.has(key)) return;
-  const task = queue.then(() => generate(nodeId, projectId, revision)).catch((error) => console.error('Falha na fila de sínteses:', error)).finally(() => active.delete(key));
-  active.set(key, task);
-  queue = task.then(() => undefined);
+  active.add(key);
+  waiting.push({ key, nodeId, projectId, revision });
+  drain();
+}
+
+function drain() {
+  while (running < MAX_CONCURRENT_SUMMARIES && waiting.length) {
+    const job = waiting.shift();
+    running++;
+    void generate(job.nodeId, job.projectId, job.revision)
+      .catch((error) => console.error('Falha na fila de sínteses:', error))
+      .finally(() => {
+        running--;
+        active.delete(job.key);
+        drain();
+      });
+  }
 }
 
 export async function prepareTopicSummaries(projectId, nodes, items) {
