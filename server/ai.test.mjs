@@ -240,6 +240,9 @@ test('síntese da seção principal organiza subestações pela última informa�
       ],
     });
     assert.match(request().input[0].content, /ITEM PRINCIPAL/);
+    assert.match(request().input[0].content, /forma consistente e direta/);
+    assert.match(request().input[0].content, /coloque o fato em Informações gerais/);
+    assert.match(request().input[0].content, /Defina as ações pendentes e indique quem é responsável/);
     assert.match(request().input[1].content[0].text, /Startup das Subestações > Ourolândia/);
     assert.ok(result.summary.indexOf('Subestação Ibicoara') < result.summary.indexOf('Subestação Ourolândia'));
     assert.ok(result.summary.indexOf('Subestação Ourolândia') < result.summary.indexOf('Informações gerais'));
@@ -257,7 +260,7 @@ test('assunto com várias subestações usa a data de cada local sem copiar a da
   ] }], important_change: '', changed_item_id: '', change_before: '', change_after: '' }, async () => {
     const result = await summarizeTopicHistory({
       projectName: 'Teste', topicPath: 'Comissionamento', isMainSection: true,
-      items: [{ id: 'multi', title: 'Acompanhamento de testes', location: 'Ourolândia, Ibicoara', created_at: '2026-10-21T12:00:00Z', updated_at: '2026-10-24T12:00:00Z', status: 'em_andamento', summary: 'Atualização por local.', responsible: '', supplier: '', due_date: '', attention: 0 }],
+      items: [{ id: 'multi', title: 'Acompanhamento de testes', location: 'Ourolândia, Ibicoara', created_at: '2026-10-21T12:00:00Z', updated_at: '2026-10-24T12:00:00Z', status: 'em_andamento', summary: 'Atualização por local.', responsible: 'Carlos', supplier: '', due_date: '', attention: 0 }],
       updates: [
         { id: '1', item_id: 'multi', created_at: '2026-10-21T12:00:00Z', summary: 'Ourolândia aguarda acesso.', evidence: '', new_status: 'em_andamento', source_title: 'Ata' },
         { id: '2', item_id: 'multi', created_at: '2026-10-24T12:00:00Z', summary: 'Ibicoara concluiu os testes.', evidence: '', new_status: 'em_andamento', source_title: 'Ata' },
@@ -267,6 +270,8 @@ test('assunto com várias subestações usa a data de cada local sem copiar a da
     assert.match(result.summary, /Subestação Ourolândia — última informação em 21\/10\/2026/);
     assert.ok(result.summary.indexOf('Subestação Ibicoara') < result.summary.indexOf('Subestação Ourolândia'));
     assert.doesNotMatch(result.summary.split('• Subestação Ibicoara')[1].split('• Subestação Ourolândia')[0], /liberação de acesso/);
+    assert.doesNotMatch(result.summary.split('• Subestação Ibicoara')[1].split('• Informações gerais')[0], /Responsável: Carlos/);
+    assert.match(result.summary.split('• Informações gerais')[1], /Responsável: Carlos/);
   });
 });
 

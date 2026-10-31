@@ -5,6 +5,7 @@ import { loadProjectContext, selectProjectContext } from './project-context.mjs'
 
 const hasModelKey = () => Boolean(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
 const SUMMARY_VERSION = 5;
+const MAIN_SECTION_SUMMARY_VERSION = 7;
 const active = new Map();
 let queue = Promise.resolve();
 
@@ -30,7 +31,7 @@ function contextQuery(path, items) {
 function fingerprint(topicPath, items, isMainSection = false, paths = new Map(), projectContext = '') {
   const records = items.map((item) => [item.id, item.node_id, ...(isMainSection ? [paths.get(item.node_id) || ''] : []), item.title, item.summary, item.status, item.responsible, item.supplier, item.due_date, item.attention, item.updated_at, item.update_count || 0]);
   records.sort((a, b) => a[0].localeCompare(b[0]));
-  const input = [isMainSection ? SUMMARY_VERSION + 1 : SUMMARY_VERSION, topicPath, records];
+  const input = [isMainSection ? MAIN_SECTION_SUMMARY_VERSION : SUMMARY_VERSION, topicPath, records];
   if (projectContext) input.push(createHash('sha256').update(projectContext).digest('hex'));
   return createHash('sha256').update(JSON.stringify(input)).digest('hex');
 }
