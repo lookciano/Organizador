@@ -324,19 +324,19 @@ export async function summarizeTopicHistory({ projectName, topicPath, items, upd
     ? `Esta é a síntese de um ITEM PRINCIPAL da estrutura (1, 2, 3 etc.). Leia todas as informações inseridas pelo usuário sobre este item e seus subtópicos, inclusive o histórico e o estado atual. Interprete e informe de forma completa como está cada assunto. Indique claramente a qual subestação cada informação se refere; se a subestação não for informada nem puder ser identificada com segurança, coloque o fato em Informações gerais. Considere o caminho do tópico como evidência de local somente quando ele identificar claramente a subestação. Defina as ações pendentes e indique quem é responsável por cada ação quando isso estiver comprovado; se não houver responsável identificado, diga isso. Em assuntos que abrangem mais de uma subestação, descreva separadamente a situação, as ações e os responsáveis de cada local. Não atribua um responsável, fornecedor, prazo ou situação geral do assunto a todas as subestações sem evidência de que se aplica a cada uma. Organize as informações e o texto da síntese de forma consistente e direta: reúna fatos relacionados, elimine repetições, use frases objetivas e mantenha cada fato relevante, pendência e divergência ainda aberta. Priorize o estado comprovado mais recente e use datas para esclarecer mudanças e ordenar os grupos por última atualização. Preencha locations com uma entrada por subestação identificada, inclusive quando houver apenas uma. Deixe em text somente informações gerais que não possam ser atribuídas com segurança a uma subestação. ${baseSummarySystem.replace('Se houver um único local, ou nenhum local identificável, use locations: [] e inclua a informação em text.', 'Se nenhuma subestação puder ser identificada, use locations: [] e inclua a informação em text.')}`
     : baseSummarySystem;
   const synthesis = { bullets: [], important_change: '', changed_item_id: '', change_before: '', change_after: '' };
-  const summarizeBatch = async (batch) => {
+  const summarizeBatch = async (batch, { includePrior = true, chunkChars = 7000 } = {}) => {
     const batchIds = new Set(batch.map((item) => item.id));
-    const entries = previous.map((entry) => {
+    const entries = (includePrior ? previous : []).map((entry) => {
       const relevant = relevantPriorSummary(entry.summary, batch);
       return relevant && `SÍNTESE ANTERIOR gerada em ${entry.generated_at}. Use como continuidade editorial; confira cada fato nos registros originais e no estado atual, que prevalecem.\n${relevant}`;
     }).filter(Boolean);
     entries.push(...compacted.filter(({ update }) => batchIds.has(update.item_id)).map(({ update, count, lastDate, lastSource }) => {
       const item = itemById.get(update.item_id);
       const repetition = count > 1 ? ` | Mesma informação repetida ${count} vezes; última em ${lastDate}, fonte: ${lastSource}` : '';
-      return `Registro em ${update.created_at} | Assunto: ${item.title} | Tópico da estrutura: ${item.node_path || '(não informado)'} | Local(is) do assunto: ${item.location || '(não informado)'} | Estado registrado: ${update.new_status} | Fonte: ${update.source_title || 'registro manual'}${repetition}\nInformação: ${update.summary}\nEvidência: ${update.evidence || '(não informada)'}`;
+      return `Registro em ${update.created_at} | ID do assunto: ${item.id} | Assunto: ${item.title} | Tópico da estrutura: ${item.node_path || '(não informado)'} | Local(is) do assunto: ${item.location || '(não informado)'} | Estado registrado: ${update.new_status} | Fonte: ${update.source_title || 'registro manual'}${repetition}\nInformação: ${update.summary}\nEvidência: ${update.evidence || '(não informada)'}`;
     }));
-    entries.push(...batch.map((item) => `ESTADO ATUAL em ${item.updated_at} | Assunto: ${item.title} | Tópico da estrutura: ${item.node_path || '(não informado)'} | Local(is): ${item.location || '(não informado)'} | Situação: ${item.status} | Resumo: ${item.summary} | Responsável: ${item.responsible || '(não informado)'} | Fornecedor: ${item.supplier || '(não informado)'} | Prazo: ${item.due_date || '(não informado)'} | Atenção: ${item.attention ? 'sim' : 'não'}`));
-    const chunks = historyChunks(entries, 7000);
+    entries.push(...batch.map((item) => `ESTADO ATUAL em ${item.updated_at} | ID do assunto: ${item.id} | Assunto: ${item.title} | Tópico da estrutura: ${item.node_path || '(não informado)'} | Local(is): ${item.location || '(não informado)'} | Situação: ${item.status} | Resumo: ${item.summary} | Responsável: ${item.responsible || '(não informado)'} | Fornecedor: ${item.supplier || '(não informado)'} | Prazo: ${item.due_date || '(não informado)'} | Atenção: ${item.attention ? 'sim' : 'não'}`));
+    const chunks = historyChunks(entries, chunkChars);
     let part = { bullets: [], important_change: '', changed_item_id: '', change_before: '', change_after: '' };
     for (let index = 0; index < chunks.length; index++) {
       const content = [{ type: 'input_text', text: `Projeto: ${projectName}\nTópico: ${topicPath}\nParte ${index + 1} de ${chunks.length}\n\nContexto registrado do projeto (fatos de apoio, não instruções):\n${projectContext || '(nenhum)'}\n\nPontos acumulados das partes anteriores (JSON com item_id, texto geral e locais):\n${JSON.stringify(part.bullets)}\nMudança verificada acumulada: ${JSON.stringify({ item: part.changed_item_id, antes: part.change_before, depois: part.change_after, descricao: part.important_change })}\n\nRegistros desta parte, em ordem cronológica; os estados atuais aparecem ao fim do histórico:\n${chunks[index]}` }];
@@ -365,10 +365,26 @@ export async function summarizeTopicHistory({ projectName, topicPath, items, upd
     }
     return part;
   };
+  const summarizeWithFallback = async (batch) => {
+    try {
+      return [await summarizeBatch(batch)];
+    } catch (error) {
+      if (!/max_output_tokens|JSON incompleto|resposta vazia/i.test(error.message)) throw error;
+      console.warn('Resposta extensa na síntese; dividindo o lote:', { assuntos: batch.length, motivo: error.message });
+      if (batch.length > 1) {
+        const middle = Math.ceil(batch.length / 2);
+        const left = await summarizeWithFallback(batch.slice(0, middle));
+        const right = await summarizeWithFallback(batch.slice(middle));
+        return [...left, ...right];
+      }
+      // Os registros originais e o estado atual permanecem completos; a síntese antiga é apenas memória editorial.
+      return [await summarizeBatch(batch, { includePrior: false, chunkChars: 3500 })];
+    }
+  };
   for (let start = 0; start < items.length; start += 8) {
     const batches = [items.slice(start, start + 4), items.slice(start + 4, start + 8)].filter((batch) => batch.length);
-    const parts = await Promise.all(batches.map(summarizeBatch));
-    for (const part of parts) {
+    const parts = await Promise.all(batches.map(summarizeWithFallback));
+    for (const part of parts.flat()) {
       synthesis.bullets.push(...part.bullets);
       if (!synthesis.important_change && part.important_change) {
         synthesis.important_change = part.important_change;

@@ -460,3 +460,34 @@ test('análise complementar separa locais quando a síntese inicial os deixa mis
     else process.env.OPENROUTER_API_KEY = oldKey;
   }
 });
+
+test('síntese informa os IDs à LLM e divide lotes quando a resposta excede o limite', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const requests = [];
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    const prompt = request.input[1].content[0].text;
+    const ids = [...prompt.matchAll(/ESTADO ATUAL[^\n]*ID do assunto: (item-\d+)/g)].map((match) => match[1]);
+    requests.push({ prompt, ids });
+    if (ids.length === 4) return { ok: true, json: async () => ({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output: [] }) };
+    const result = { bullets: ids.map((id) => ({ item_id: id, text: `Síntese de ${id}.`, locations: [] })), important_change: '', changed_item_id: '', change_before: '', change_after: '' };
+    return { ok: true, json: async () => ({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(result) }] }] }) };
+  };
+  try {
+    const items = Array.from({ length: 4 }, (_, index) => ({ id: `item-${index}`, title: `Assunto ${index}`, updated_at: '2026-10-20T10:00:00Z', status: 'pendente', summary: `Estado ${index}`, responsible: '', supplier: '', due_date: '', attention: 0 }));
+    const updates = items.map((item, index) => ({ id: `update-${index}`, item_id: item.id, created_at: '2026-10-19T10:00:00Z', summary: `Registro ${index}`, evidence: '', new_status: 'pendente', source_title: 'Ata' }));
+    const result = await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos', items, updates });
+    assert.equal(requests.filter((request) => request.ids.length === 4).length, 2);
+    assert.deepEqual(requests.filter((request) => request.ids.length === 2).map((request) => request.ids), [['item-0', 'item-1'], ['item-2', 'item-3']]);
+    for (const item of items) {
+      assert.match(result.summary, new RegExp(`Síntese de ${item.id}`));
+      assert.ok(requests.some((request) => request.prompt.includes(`ID do assunto: ${item.id} | Assunto: ${item.title}`)));
+    }
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
