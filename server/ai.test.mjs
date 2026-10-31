@@ -104,6 +104,53 @@ test('síntese consulta o contexto do projeto sem tratá-lo como atualização',
   });
 });
 
+test('síntese repete a análise quando o OpenRouter devolve JSON cortado', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const limits = [];
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    limits.push(request.max_output_tokens);
+    const text = limits.length === 1 ? '{"bullets":[' : JSON.stringify({ bullets: [{ item_id: 'a', text: 'Revisão pendente.', locations: [] }], important_change: '', changed_item_id: '', change_before: '', change_after: '' });
+    return { ok: true, json: async () => ({ status: limits.length === 1 ? 'incomplete' : 'completed', incomplete_details: limits.length === 1 ? { reason: 'max_output_tokens' } : null, output: [{ type: 'message', content: [{ type: 'output_text', text }] }] }) };
+  };
+  try {
+    const result = await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Revisões', items: [{ id: 'a', title: 'Revisão', updated_at: '2026-10-24T10:00:00Z', status: 'pendente', summary: 'Revisão pendente.', location: '', responsible: '', supplier: '', due_date: '', attention: 0 }], updates: [] });
+    assert.deepEqual(limits, [8000, 16000]);
+    assert.match(result.summary, /Revisão pendente/);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
+
+test('síntese extensa limita cada pedido a quatro assuntos sem perder itens', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const requested = [];
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    const ids = [...request.input[1].content[0].text.matchAll(/ESTADO ATUAL[^\n]*Assunto: Item (\d+)/g)].map((match) => match[1]);
+    requested.push(ids);
+    const result = { bullets: ids.map((id) => ({ item_id: id, text: `Síntese do item ${id}.`, locations: [] })), important_change: '', changed_item_id: '', change_before: '', change_after: '' };
+    return { ok: true, json: async () => ({ output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(result) }] }] }) };
+  };
+  try {
+    const items = Array.from({ length: 9 }, (_, index) => ({ id: String(index), title: `Item ${index}`, updated_at: '2026-10-24T10:00:00Z', status: 'pendente', summary: `Estado ${index}.`, location: '', responsible: '', supplier: '', due_date: '', attention: 0 }));
+    const result = await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos', items, updates: [] });
+    assert.deepEqual(requested.map((ids) => ids.length), [4, 4, 1]);
+    assert.match(result.summary, /Síntese do item 0/);
+    assert.match(result.summary, /Síntese do item 8/);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
+
 test('extração evita atribuir um tópico quando a confiança na categoria é baixa', async () => {
   const item = { existing_item_id: '', node_id: 'ouro-cub', node_confidence: 0.52, title: 'Situação de Ourolândia', summary: 'Revisão em andamento', location: 'Ourolândia', discipline: '', supplier: '', responsible: '', status: 'em_andamento', due_date: '', attention: false, confidence: 0.9, evidence: 'Revisão em andamento' };
   await mockAnalysis({ items: [item] }, async () => {
