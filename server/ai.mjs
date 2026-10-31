@@ -59,7 +59,7 @@ export function structurePaths(nodes) {
   return nodes.map((node) => ({ id: node.id, path: pathFor(node) }));
 }
 
-async function requestAnalysis({ system, content, schema, name, maxOutputTokens = 1200 }) {
+async function requestAnalysis({ system, content, schema, name, maxOutputTokens = 1200, retryIncomplete = true }) {
   const useOpenRouter = Boolean(process.env.OPENROUTER_API_KEY);
   const apiKey = useOpenRouter ? process.env.OPENROUTER_API_KEY : process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('Configure OPENROUTER_API_KEY ou OPENAI_API_KEY para ativar a análise');
@@ -112,7 +112,7 @@ async function requestAnalysis({ system, content, schema, name, maxOutputTokens 
       throw new Error(`Falha na análise: ${message}`);
     }
     if (result.status === 'incomplete' || !raw.trim()) {
-      if (attempt === 0) continue;
+      if (attempt === 0 && (retryIncomplete || result.incomplete_details?.reason !== 'max_output_tokens')) continue;
       throw new Error(`A IA não concluiu ${name}: ${result.incomplete_details?.reason || 'resposta vazia'} (limite ${outputLimit} tokens)`);
     }
     try {
@@ -343,6 +343,7 @@ export async function summarizeTopicHistory({ projectName, topicPath, items, upd
       const parsed = await requestAnalysis({
         system: mainSectionSystem,
         content, schema: topicSummarySchema, name: 'topic_history_summary', maxOutputTokens: 8000,
+        retryIncomplete: batch.length === 1,
       });
       const merged = new Map(part.bullets.map((bullet) => [bullet.item_id, bullet]));
       for (const bullet of parsed.bullets || []) {

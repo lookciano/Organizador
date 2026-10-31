@@ -479,7 +479,7 @@ test('síntese informa os IDs à LLM e divide lotes quando a resposta excede o l
     const items = Array.from({ length: 4 }, (_, index) => ({ id: `item-${index}`, title: `Assunto ${index}`, updated_at: '2026-10-20T10:00:00Z', status: 'pendente', summary: `Estado ${index}`, responsible: '', supplier: '', due_date: '', attention: 0 }));
     const updates = items.map((item, index) => ({ id: `update-${index}`, item_id: item.id, created_at: '2026-10-19T10:00:00Z', summary: `Registro ${index}`, evidence: '', new_status: 'pendente', source_title: 'Ata' }));
     const result = await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos', items, updates });
-    assert.equal(requests.filter((request) => request.ids.length === 4).length, 2);
+    assert.equal(requests.filter((request) => request.ids.length === 4).length, 1);
     assert.deepEqual(requests.filter((request) => request.ids.length === 2).map((request) => request.ids), [['item-0', 'item-1'], ['item-2', 'item-3']]);
     for (const item of items) {
       assert.match(result.summary, new RegExp(`Síntese de ${item.id}`));
