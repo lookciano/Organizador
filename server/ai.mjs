@@ -324,8 +324,7 @@ export async function summarizeTopicHistory({ projectName, topicPath, items, upd
     ? `Esta é a síntese de um ITEM PRINCIPAL da estrutura (1, 2, 3 etc.). Leia todas as informações inseridas pelo usuário sobre este item e seus subtópicos, inclusive o histórico e o estado atual. Interprete e informe de forma completa como está cada assunto. Indique claramente a qual subestação cada informação se refere; se a subestação não for informada nem puder ser identificada com segurança, coloque o fato em Informações gerais. Considere o caminho do tópico como evidência de local somente quando ele identificar claramente a subestação. Defina as ações pendentes e indique quem é responsável por cada ação quando isso estiver comprovado; se não houver responsável identificado, diga isso. Em assuntos que abrangem mais de uma subestação, descreva separadamente a situação, as ações e os responsáveis de cada local. Não atribua um responsável, fornecedor, prazo ou situação geral do assunto a todas as subestações sem evidência de que se aplica a cada uma. Organize as informações e o texto da síntese de forma consistente e direta: reúna fatos relacionados, elimine repetições, use frases objetivas e mantenha cada fato relevante, pendência e divergência ainda aberta. Priorize o estado comprovado mais recente e use datas para esclarecer mudanças e ordenar os grupos por última atualização. Preencha locations com uma entrada por subestação identificada, inclusive quando houver apenas uma. Deixe em text somente informações gerais que não possam ser atribuídas com segurança a uma subestação. ${baseSummarySystem.replace('Se houver um único local, ou nenhum local identificável, use locations: [] e inclua a informação em text.', 'Se nenhuma subestação puder ser identificada, use locations: [] e inclua a informação em text.')}`
     : baseSummarySystem;
   const synthesis = { bullets: [], important_change: '', changed_item_id: '', change_before: '', change_after: '' };
-  for (let start = 0; start < items.length; start += 4) {
-    const batch = items.slice(start, start + 4);
+  const summarizeBatch = async (batch) => {
     const batchIds = new Set(batch.map((item) => item.id));
     const entries = previous.map((entry) => {
       const relevant = relevantPriorSummary(entry.summary, batch);
@@ -364,12 +363,19 @@ export async function summarizeTopicHistory({ projectName, topicPath, items, upd
         change_before: parsed.change_before || part.change_before,
         change_after: parsed.change_after || part.change_after };
     }
-    synthesis.bullets.push(...part.bullets);
-    if (!synthesis.important_change && part.important_change) {
-      synthesis.important_change = part.important_change;
-      synthesis.changed_item_id = part.changed_item_id;
-      synthesis.change_before = part.change_before;
-      synthesis.change_after = part.change_after;
+    return part;
+  };
+  for (let start = 0; start < items.length; start += 8) {
+    const batches = [items.slice(start, start + 4), items.slice(start + 4, start + 8)].filter((batch) => batch.length);
+    const parts = await Promise.all(batches.map(summarizeBatch));
+    for (const part of parts) {
+      synthesis.bullets.push(...part.bullets);
+      if (!synthesis.important_change && part.important_change) {
+        synthesis.important_change = part.important_change;
+        synthesis.changed_item_id = part.changed_item_id;
+        synthesis.change_before = part.change_before;
+        synthesis.change_after = part.change_after;
+      }
     }
   }
   for (const item of items) if (!synthesis.bullets.some((bullet) => bullet.item_id === item.id)) {

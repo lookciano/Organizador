@@ -177,6 +177,34 @@ test('síntese extensa limita cada pedido a quatro assuntos sem perder itens', a
   }
 });
 
+test('partes independentes da síntese são analisadas em paralelo e preservam a ordem', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  let running = 0;
+  let peak = 0;
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    const ids = [...request.input[1].content[0].text.matchAll(/ESTADO ATUAL[^\n]*Assunto: Item (\d+)/g)].map((match) => match[1]);
+    running++;
+    peak = Math.max(peak, running);
+    await new Promise((resolve) => setTimeout(resolve, ids.includes('0') ? 20 : 5));
+    running--;
+    const result = { bullets: ids.map((id) => ({ item_id: id, text: `Síntese ${id}.`, locations: [] })), important_change: '', changed_item_id: '', change_before: '', change_after: '' };
+    return { ok: true, json: async () => ({ output_text: JSON.stringify(result) }) };
+  };
+  try {
+    const items = Array.from({ length: 8 }, (_, index) => ({ id: String(index), title: `Item ${index}`, updated_at: '2026-10-24T10:00:00Z', status: 'pendente', summary: `Estado ${index}.`, location: '', responsible: '', supplier: '', due_date: '', attention: 0 }));
+    const result = await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos', items, updates: [] });
+    assert.equal(peak, 2);
+    assert.ok(result.summary.indexOf('• Item 0:') < result.summary.indexOf('• Item 7:'));
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
+
 test('extração evita atribuir um tópico quando a confiança na categoria é baixa', async () => {
   const item = { existing_item_id: '', node_id: 'ouro-cub', node_confidence: 0.52, title: 'Situação de Ourolândia', summary: 'Revisão em andamento', location: 'Ourolândia', discipline: '', supplier: '', responsible: '', status: 'em_andamento', due_date: '', attention: false, confidence: 0.9, evidence: 'Revisão em andamento' };
   await mockAnalysis({ items: [item] }, async () => {

@@ -6,7 +6,7 @@ import { loadProjectContext, selectProjectContext } from './project-context.mjs'
 const hasModelKey = () => Boolean(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
 const SUMMARY_VERSION = 6;
 const MAIN_SECTION_SUMMARY_VERSION = 8;
-const MAX_CONCURRENT_SUMMARIES = 3;
+const MAX_CONCURRENT_SUMMARIES = 2;
 const active = new Set();
 const waiting = [];
 let running = 0;
