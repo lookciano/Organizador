@@ -79,7 +79,9 @@ async function generate(nodeId, projectId, revision) {
     const projectContext = selectProjectContext(contextEntries, contextQuery(path, items));
     const model = process.env.OPENROUTER_API_KEY ? process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4.1-flash' : process.env.OPENAI_MODEL || 'gpt-4.1-mini';
     console.info('Iniciando síntese:', nodeId, { modelo: model, assuntos: items.length, registros: updates.length, sintesesAnteriores: priorSummaries.length });
-    const result = await summarizeTopicHistory({ projectName: projects[0].name, topicPath: path, items, updates, priorSummaries, isMainSection: !node.parent_id, projectContext });
+    const result = await summarizeTopicHistory({ projectName: projects[0].name, topicPath: path, items, updates, priorSummaries, isMainSection: !node.parent_id, projectContext,
+      onProgress: ({ completed, total }) => console.info('Progresso da síntese:', nodeId, { assuntosAnalisados: completed, total }),
+    });
     const generatedAt = new Date().toISOString();
     const connection = await db().getConnection();
     try {

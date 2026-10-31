@@ -297,7 +297,7 @@ function relevantPriorSummary(summary, batch) {
   return lines.join('\n');
 }
 
-export async function summarizeTopicHistory({ projectName, topicPath, items, updates, priorSummaries = [], isMainSection = false, projectContext = '' }) {
+export async function summarizeTopicHistory({ projectName, topicPath, items, updates, priorSummaries = [], isMainSection = false, projectContext = '', onProgress }) {
   if (!items.length) return { summary: '', importantChange: '' };
   const itemById = new Map(items.map((item) => [item.id, item]));
   const ordered = updates
@@ -382,8 +382,9 @@ export async function summarizeTopicHistory({ projectName, topicPath, items, upd
       return [await summarizeBatch(batch, { includePrior: false, chunkChars: 3500 })];
     }
   };
-  for (let start = 0; start < items.length; start += 8) {
-    const batches = [items.slice(start, start + 4), items.slice(start + 4, start + 8)].filter((batch) => batch.length);
+  const waveSize = items.length >= 20 ? 16 : 8;
+  for (let start = 0; start < items.length; start += waveSize) {
+    const batches = Array.from({ length: waveSize / 4 }, (_, index) => items.slice(start + index * 4, start + (index + 1) * 4)).filter((batch) => batch.length);
     const parts = await Promise.all(batches.map(summarizeWithFallback));
     for (const part of parts.flat()) {
       synthesis.bullets.push(...part.bullets);
@@ -394,6 +395,7 @@ export async function summarizeTopicHistory({ projectName, topicPath, items, upd
         synthesis.change_after = part.change_after;
       }
     }
+    onProgress?.({ completed: Math.min(start + waveSize, items.length), total: items.length });
   }
   for (const item of items) if (!synthesis.bullets.some((bullet) => bullet.item_id === item.id)) {
     synthesis.bullets.push({ item_id: item.id, text: item.summary || 'Sem descrição adicional.', locations: [] });
