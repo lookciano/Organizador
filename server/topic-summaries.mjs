@@ -72,15 +72,28 @@ async function generate(nodeId, projectId, revision) {
     const paths = new Map(structurePaths(nodes).map((entry) => [entry.id, entry.path]));
     const path = paths.get(nodeId) || node.title;
     for (const item of items) item.node_path = paths.get(item.node_id) || '';
-    const [[priorSummaries], contextEntries] = await Promise.all([
+    const [[priorSummaries], [progressRows], contextEntries] = await Promise.all([
       db().execute('SELECT revision,summary,generated_at FROM topic_summary_history WHERE node_id=? AND project_id=? AND revision<>? ORDER BY generated_at,revision', [nodeId, projectId, revision]),
+      db().execute('SELECT completed_count,result_json FROM topic_summary_progress WHERE node_id=? AND project_id=? AND revision=?', [nodeId, projectId, revision]),
       loadProjectContext(projectId),
     ]);
+    let resumeProgress;
+    if (progressRows.length) {
+      try { resumeProgress = { completed_count: progressRows[0].completed_count, result: JSON.parse(progressRows[0].result_json) }; }
+      catch { console.warn('Progresso anterior da síntese inválido; reiniciando:', nodeId); }
+    }
     const projectContext = selectProjectContext(contextEntries, contextQuery(path, items));
     const model = process.env.OPENROUTER_API_KEY ? process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4.1-flash' : process.env.OPENAI_MODEL || 'gpt-4.1-mini';
-    console.info('Iniciando síntese:', nodeId, { modelo: model, assuntos: items.length, registros: updates.length, sintesesAnteriores: priorSummaries.length });
-    const result = await summarizeTopicHistory({ projectName: projects[0].name, topicPath: path, items, updates, priorSummaries, isMainSection: !node.parent_id, projectContext,
-      onProgress: ({ completed, total }) => console.info('Progresso da síntese:', nodeId, { assuntosAnalisados: completed, total }),
+    console.info('Iniciando síntese:', nodeId, { modelo: model, assuntos: items.length, registros: updates.length, sintesesAnteriores: priorSummaries.length, retomandoDe: resumeProgress?.completed_count || 0 });
+    const result = await summarizeTopicHistory({ projectName: projects[0].name, topicPath: path, items, updates, priorSummaries, isMainSection: !node.parent_id, projectContext, resumeProgress,
+      onProgress: async ({ completed, total, result: partial }) => {
+        await db().execute(`INSERT INTO topic_summary_progress (node_id,project_id,revision,completed_count,result_json,updated_at)
+          SELECT node_id,project_id,revision,?,?,? FROM topic_summaries
+          WHERE node_id=? AND project_id=? AND revision=? AND analysis_status='processing'
+          ON DUPLICATE KEY UPDATE revision=VALUES(revision),completed_count=VALUES(completed_count),result_json=VALUES(result_json),updated_at=VALUES(updated_at)`,
+        [completed, JSON.stringify(partial), new Date().toISOString(), nodeId, projectId, revision]);
+        console.info('Progresso da síntese:', nodeId, { assuntosAnalisados: completed, total });
+      },
     });
     const generatedAt = new Date().toISOString();
     const connection = await db().getConnection();
@@ -90,6 +103,7 @@ async function generate(nodeId, projectId, revision) {
         [result.summary, result.importantChange, generatedAt, nodeId, projectId, revision]);
       if (saved.affectedRows) await connection.execute('INSERT IGNORE INTO topic_summary_history (node_id,project_id,revision,summary,important_change,generated_at) VALUES (?,?,?,?,?,?)',
         [nodeId, projectId, revision, result.summary, result.importantChange, generatedAt]);
+      if (saved.affectedRows) await connection.execute('DELETE FROM topic_summary_progress WHERE node_id=? AND project_id=? AND revision=?', [nodeId, projectId, revision]);
       await connection.commit();
       console.info('Síntese concluída:', nodeId, { segundos: Math.round((Date.now() - started) / 1000), assuntos: items.length });
     } catch (error) { await connection.rollback(); throw error; }
@@ -129,7 +143,9 @@ export async function prepareTopicSummaries(projectId, nodes, items) {
   const paths = new Map(structurePaths(activeNodes).map((node) => [node.id, node.path]));
   const groups = relatedItems(activeNodes, items);
   const [[rows], contextEntries] = await Promise.all([
-    db().execute('SELECT node_id,revision,summary,important_change,analysis_status,analysis_error,generated_at FROM topic_summaries WHERE project_id=?', [projectId]),
+    db().execute(`SELECT s.node_id,s.revision,s.summary,s.important_change,s.analysis_status,s.analysis_error,s.generated_at,
+      IF(p.revision=s.revision,p.completed_count,0) AS progress_completed FROM topic_summaries s
+      LEFT JOIN topic_summary_progress p ON p.node_id=s.node_id WHERE s.project_id=?`, [projectId]),
     loadProjectContext(projectId),
   ]);
   const existing = new Map(rows.map((row) => [row.node_id, row]));
@@ -170,7 +186,7 @@ export async function prepareTopicSummaries(projectId, nodes, items) {
         [node.id, projectId, revision, old?.summary || '', old?.important_change || '', initialStatus]));
     }
     const status = !old || old.revision !== revision || retryWithKey || retryAfterColumnExpansion ? initialStatus : old.analysis_status;
-    const current = { node_id: node.id, summary: old?.summary || '', important_change: status === 'completed' ? old?.important_change || '' : '', analysis_status: status, analysis_error: status === 'failed' ? old?.analysis_error : null, generated_at: old?.generated_at || null };
+    const current = { node_id: node.id, summary: old?.summary || '', important_change: status === 'completed' ? old?.important_change || '' : '', analysis_status: status, analysis_error: status === 'failed' ? old?.analysis_error : null, generated_at: old?.generated_at || null, progress_completed: old?.revision === revision ? Number(old?.progress_completed || 0) : 0, progress_total: records.length };
     result.push(current);
     if (hasModelKey() && ['pending', 'processing'].includes(status)) {
       const work = records.reduce((total, item) => total + Number(item.update_count || 0) + 1, 0);

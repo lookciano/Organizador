@@ -297,7 +297,7 @@ function relevantPriorSummary(summary, batch) {
   return lines.join('\n');
 }
 
-export async function summarizeTopicHistory({ projectName, topicPath, items, updates, priorSummaries = [], isMainSection = false, projectContext = '', onProgress }) {
+export async function summarizeTopicHistory({ projectName, topicPath, items, updates, priorSummaries = [], isMainSection = false, projectContext = '', onProgress, resumeProgress }) {
   if (!items.length) return { summary: '', importantChange: '' };
   const itemById = new Map(items.map((item) => [item.id, item]));
   const ordered = updates
@@ -323,7 +323,13 @@ export async function summarizeTopicHistory({ projectName, topicPath, items, upd
   const mainSectionSystem = isMainSection
     ? `Esta é a síntese de um ITEM PRINCIPAL da estrutura (1, 2, 3 etc.). Leia todas as informações inseridas pelo usuário sobre este item e seus subtópicos, inclusive o histórico e o estado atual. Interprete e informe de forma completa como está cada assunto. Indique claramente a qual subestação cada informação se refere; se a subestação não for informada nem puder ser identificada com segurança, coloque o fato em Informações gerais. Considere o caminho do tópico como evidência de local somente quando ele identificar claramente a subestação. Defina as ações pendentes e indique quem é responsável por cada ação quando isso estiver comprovado; se não houver responsável identificado, diga isso. Em assuntos que abrangem mais de uma subestação, descreva separadamente a situação, as ações e os responsáveis de cada local. Não atribua um responsável, fornecedor, prazo ou situação geral do assunto a todas as subestações sem evidência de que se aplica a cada uma. Organize as informações e o texto da síntese de forma consistente e direta: reúna fatos relacionados, elimine repetições, use frases objetivas e mantenha cada fato relevante, pendência e divergência ainda aberta. Priorize o estado comprovado mais recente e use datas para esclarecer mudanças e ordenar os grupos por última atualização. Preencha locations com uma entrada por subestação identificada, inclusive quando houver apenas uma. Deixe em text somente informações gerais que não possam ser atribuídas com segurança a uma subestação. ${baseSummarySystem.replace('Se houver um único local, ou nenhum local identificável, use locations: [] e inclua a informação em text.', 'Se nenhuma subestação puder ser identificada, use locations: [] e inclua a informação em text.')}`
     : baseSummarySystem;
-  const synthesis = { bullets: [], important_change: '', changed_item_id: '', change_before: '', change_after: '' };
+  const resumeCount = Number(resumeProgress?.completed_count) || 0;
+  const resumeValid = resumeCount > 0 && resumeCount <= items.length
+    && Array.isArray(resumeProgress?.result?.bullets)
+    && items.slice(0, resumeCount).every((item) => resumeProgress.result.bullets.some((bullet) => bullet.item_id === item.id));
+  const synthesis = resumeValid
+    ? { ...resumeProgress.result, bullets: [...resumeProgress.result.bullets] }
+    : { bullets: [], important_change: '', changed_item_id: '', change_before: '', change_after: '' };
   const summarizeBatch = async (batch, { includePrior = true, chunkChars = 7000 } = {}) => {
     const batchIds = new Set(batch.map((item) => item.id));
     const entries = (includePrior ? previous : []).map((entry) => {
@@ -384,7 +390,7 @@ export async function summarizeTopicHistory({ projectName, topicPath, items, upd
   };
   const batchSize = items.length >= 20 ? 1 : 4;
   const waveSize = items.length >= 20 ? 4 : 8;
-  for (let start = 0; start < items.length; start += waveSize) {
+  for (let start = resumeValid ? resumeCount : 0; start < items.length; start += waveSize) {
     const batches = Array.from({ length: waveSize / batchSize }, (_, index) => items.slice(start + index * batchSize, start + (index + 1) * batchSize)).filter((batch) => batch.length);
     const parts = await Promise.all(batches.map(summarizeWithFallback));
     for (const part of parts.flat()) {
@@ -396,7 +402,7 @@ export async function summarizeTopicHistory({ projectName, topicPath, items, upd
         synthesis.change_after = part.change_after;
       }
     }
-    onProgress?.({ completed: Math.min(start + waveSize, items.length), total: items.length });
+    await onProgress?.({ completed: Math.min(start + waveSize, items.length), total: items.length, result: synthesis });
   }
   for (const item of items) if (!synthesis.bullets.some((bullet) => bullet.item_id === item.id)) {
     synthesis.bullets.push({ item_id: item.id, text: item.summary || 'Sem descrição adicional.', locations: [] });

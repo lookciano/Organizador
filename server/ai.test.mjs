@@ -226,11 +226,39 @@ test('seção extensa analisa quatro lotes por vez e informa o avanço', async (
   };
   try {
     const items = Array.from({ length: 24 }, (_, index) => ({ id: String(index), title: `Item ${index}`, updated_at: '2026-10-24T10:00:00Z', status: 'pendente', summary: `Estado ${index}.`, location: '', responsible: '', supplier: '', due_date: '', attention: 0 }));
-    const result = await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos', items, updates: [], onProgress: (value) => progress.push(value) });
+    const result = await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos', items, updates: [], onProgress: (value) => progress.push(structuredClone(value)) });
     assert.equal(peak, 4);
-    assert.deepEqual(progress, [4, 8, 12, 16, 20, 24].map((completed) => ({ completed, total: 24 })));
+    assert.deepEqual(progress.map(({ completed, total }) => ({ completed, total })), [4, 8, 12, 16, 20, 24].map((completed) => ({ completed, total: 24 })));
+    assert.deepEqual(progress.map(({ result }) => result.bullets.length), [4, 8, 12, 16, 20, 24]);
     assert.ok(requestSizes.every((size) => size === 1));
     assert.ok(result.summary.indexOf('• Item 0:') < result.summary.indexOf('• Item 23:'));
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
+
+test('síntese interrompida retoma dos assuntos já analisados', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const requested = [];
+  globalThis.fetch = async (_url, options) => {
+    const prompt = JSON.parse(options.body).input[1].content[0].text;
+    const ids = [...prompt.matchAll(/ESTADO ATUAL[^\n]*Assunto: Item (\d+)/g)].map((match) => match[1]);
+    requested.push(...ids);
+    return { ok: true, json: async () => ({ output_text: JSON.stringify({ bullets: ids.map((id) => ({ item_id: id, text: `Síntese ${id}.`, locations: [] })), important_change: '', changed_item_id: '', change_before: '', change_after: '' }) }) };
+  };
+  try {
+    const items = Array.from({ length: 24 }, (_, index) => ({ id: String(index), title: `Item ${index}`, updated_at: '2026-10-24T10:00:00Z', status: 'pendente', summary: `Estado ${index}.`, location: '', responsible: '', supplier: '', due_date: '', attention: 0 }));
+    const resumeProgress = { completed_count: 20, result: { bullets: items.slice(0, 20).map((item) => ({ item_id: item.id, text: `Síntese ${item.id}.`, locations: [] })), important_change: '', changed_item_id: '', change_before: '', change_after: '' } };
+    const progress = [];
+    const result = await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos', items, updates: [], resumeProgress, onProgress: async ({ completed }) => progress.push(completed) });
+    assert.deepEqual(requested, ['20', '21', '22', '23']);
+    assert.deepEqual(progress, [24]);
+    assert.match(result.summary, /Síntese 0/);
+    assert.match(result.summary, /Síntese 23/);
   } finally {
     globalThis.fetch = oldFetch;
     if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;

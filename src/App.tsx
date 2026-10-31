@@ -13,7 +13,7 @@ type ContextEntry = { id: string; title: string; body: string; excerpt: string; 
 type MatrixContextRow = { item_id: string; title: string; topic: string; responsible: string; supplier: string; contact: string; action: string; channel: string; frequency: string; evidence: string };
 type Update = { id: string; summary: string; evidence: string; previous_status: string | null; new_status: string; created_at: string; source_title: string | null; author_email: string | null };
 type HistoryEntry = { id: string; item_id: string; summary: string; evidence: string; created_at: string; source_title: string | null; author_email: string | null };
-type TopicSummary = { node_id: string; summary: string; important_change: string; analysis_status: string; analysis_error: string | null; generated_at: string | null };
+type TopicSummary = { node_id: string; summary: string; important_change: string; analysis_status: string; analysis_error: string | null; generated_at: string | null; progress_completed?: number; progress_total?: number };
 type State = { user: User; projects: Project[]; project?: Project; nodes?: Node[]; sources?: Source[]; items?: Item[]; members?: Member[]; invitations?: Invitation[]; contextEntries?: ContextEntry[]; topicSummaries?: TopicSummary[] };
 type View = "overview" | "items" | "organize" | "sources" | "context" | "structure" | "people" | "reports";
 
@@ -230,7 +230,7 @@ function TopicSynthesis({ value, onRetry, isMainSection = false }: { value?: Top
   const [error, setError] = useState("");
   const updating = ["pending", "processing"].includes(value?.analysis_status || "");
   const unavailable = ["failed", "needs_key"].includes(value?.analysis_status || "");
-  const progressLabel = value?.analysis_status === "pending" ? "Na fila para atualizar" : value?.analysis_status === "processing" ? "Analisando o histórico" : "";
+  const progressLabel = value?.analysis_status === "pending" ? "Na fila para atualizar" : value?.analysis_status === "processing" ? `Analisando o histórico${value.progress_completed && value.progress_total ? ` · ${value.progress_completed}/${value.progress_total} assuntos` : ""}` : "";
   const points: { text: string; locations: string[] }[] = [];
   for (const line of value?.summary?.split(/\r?\n/) || []) {
     const location = line.match(/^\s*◦\s+(.+)$/);

@@ -134,6 +134,12 @@ const schema = [
     important_change TEXT NOT NULL, generated_at VARCHAR(30) NOT NULL,
     PRIMARY KEY (node_id, revision), INDEX (project_id), INDEX (generated_at)
   )`,
+  `CREATE TABLE IF NOT EXISTS topic_summary_progress (
+    node_id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL,
+    revision CHAR(64) NOT NULL, completed_count INT NOT NULL,
+    result_json LONGTEXT NOT NULL, updated_at VARCHAR(30) NOT NULL,
+    INDEX (project_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS app_migrations (
     project_id VARCHAR(36) NOT NULL, migration_key VARCHAR(100) NOT NULL,
     applied_at VARCHAR(30) NOT NULL, PRIMARY KEY (project_id, migration_key)
