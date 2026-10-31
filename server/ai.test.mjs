@@ -99,7 +99,7 @@ test('síntese consulta o contexto do projeto sem tratá-lo como atualização',
   await mockAnalysis({ bullets: [{ item_id: 'a', text: 'A revisão continua pendente.', locations: [] }], important_change: '', changed_item_id: '', change_before: '', change_after: '' }, async (request) => {
     const result = await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos > Cubículos', projectContext: 'A Alfa fabrica os cubículos de Ourolândia.', items: [{ id: 'a', title: 'Cubículo', updated_at: '2026-10-24T10:00:00Z', status: 'pendente', summary: 'A revisão continua pendente.', location: 'Ourolândia', responsible: '', supplier: '', due_date: '', attention: 0 }], updates: [] });
     assert.match(request().input[1].content[0].text, /Alfa fabrica os cubículos de Ourolândia/);
-    assert.match(request().input[0].content, /o contexto não prova que uma ação nova ocorreu/);
+    assert.match(request().input[0].content, /o contexto não prova que uma ação nova ocorreu/i);
     assert.match(result.summary, /revisão continua pendente/);
   });
 });

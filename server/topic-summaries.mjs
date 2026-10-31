@@ -4,8 +4,8 @@ import { structurePaths, summarizeTopicHistory } from './ai.mjs';
 import { loadProjectContext, selectProjectContext } from './project-context.mjs';
 
 const hasModelKey = () => Boolean(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
-const SUMMARY_VERSION = 7;
-const MAIN_SECTION_SUMMARY_VERSION = 9;
+const SUMMARY_VERSION = 8;
+const MAIN_SECTION_SUMMARY_VERSION = 10;
 const MAX_CONCURRENT_SUMMARIES = 2;
 const active = new Set();
 const waiting = [];
