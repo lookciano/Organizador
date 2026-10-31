@@ -761,7 +761,7 @@ app.use((error, _req, res, _next) => {
 await initializeDatabase();
 const [unfinishedSources] = await db().execute("SELECT id,project_id FROM sources WHERE analysis_status IN ('pending','processing') ORDER BY created_at");
 for (const source of unfinishedSources) void startSourceProcessing(source.id, source.project_id);
-const [unfinishedSummaries] = await db().execute("SELECT DISTINCT project_id FROM topic_summaries WHERE analysis_status IN ('pending','processing')");
+const [unfinishedSummaries] = await db().execute("SELECT DISTINCT project_id FROM topic_summaries WHERE analysis_status IN ('pending','processing') OR (analysis_status='failed' AND analysis_error LIKE '%Data too long for column%')");
 for (const project of unfinishedSummaries) updateTopicSummaries(project.project_id);
 const port = Number(process.env.PORT || 10000);
 app.listen(port, '0.0.0.0', () => console.log(`Organizador disponível na porta ${port}`));

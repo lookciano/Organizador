@@ -152,8 +152,12 @@ export async function prepareTopicSummaries(projectId, nodes, items) {
     const revision = fingerprint(topicPath, records, !node.parent_id, paths, projectContext);
     const old = existing.get(node.id);
     const retryWithKey = old?.analysis_status === 'needs_key' && hasModelKey();
+    const retryAfterColumnExpansion = old?.analysis_status === 'failed' && /Data too long for column 'summary'/i.test(old.analysis_error || '');
     const initialStatus = hasModelKey() ? 'pending' : 'needs_key';
-    if (!old || old.revision !== revision || retryWithKey) {
+    if (retryAfterColumnExpansion && old.revision === revision) {
+      writes.push(db().execute('UPDATE topic_summaries SET analysis_status=?,analysis_error=NULL WHERE node_id=? AND project_id=? AND revision=?',
+        [initialStatus, node.id, projectId, revision]));
+    } else if (!old || old.revision !== revision || retryWithKey) {
       if (old?.summary && old.analysis_status === 'completed' && old.generated_at) {
         writes.push(db().execute('INSERT IGNORE INTO topic_summary_history (node_id,project_id,revision,summary,important_change,generated_at) VALUES (?,?,?,?,?,?)',
           [node.id, projectId, old.revision, old.summary, old.important_change || '', old.generated_at]));
@@ -165,7 +169,7 @@ export async function prepareTopicSummaries(projectId, nodes, items) {
           revision=VALUES(revision)`,
         [node.id, projectId, revision, old?.summary || '', old?.important_change || '', initialStatus]));
     }
-    const status = !old || old.revision !== revision || retryWithKey ? initialStatus : old.analysis_status;
+    const status = !old || old.revision !== revision || retryWithKey || retryAfterColumnExpansion ? initialStatus : old.analysis_status;
     const current = { node_id: node.id, summary: old?.summary || '', important_change: status === 'completed' ? old?.important_change || '' : '', analysis_status: status, analysis_error: status === 'failed' ? old?.analysis_error : null, generated_at: old?.generated_at || null };
     result.push(current);
     if (hasModelKey() && ['pending', 'processing'].includes(status)) {

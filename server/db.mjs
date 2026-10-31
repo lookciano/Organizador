@@ -123,14 +123,14 @@ const schema = [
   )`,
   `CREATE TABLE IF NOT EXISTS topic_summaries (
     node_id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL,
-    revision CHAR(64) NOT NULL, summary TEXT NOT NULL,
+    revision CHAR(64) NOT NULL, summary LONGTEXT NOT NULL,
     important_change TEXT NOT NULL, analysis_status VARCHAR(30) NOT NULL,
     analysis_error TEXT, generated_at VARCHAR(30),
     INDEX (project_id), INDEX (analysis_status)
   )`,
   `CREATE TABLE IF NOT EXISTS topic_summary_history (
     node_id VARCHAR(36) NOT NULL, project_id VARCHAR(36) NOT NULL,
-    revision CHAR(64) NOT NULL, summary TEXT NOT NULL,
+    revision CHAR(64) NOT NULL, summary LONGTEXT NOT NULL,
     important_change TEXT NOT NULL, generated_at VARCHAR(30) NOT NULL,
     PRIMARY KEY (node_id, revision), INDEX (project_id), INDEX (generated_at)
   )`,
@@ -171,6 +171,10 @@ export async function initializeDatabase() {
   const connection = await db().getConnection();
   try {
     for (const statement of schema) await connection.query(statement);
+    for (const table of ['topic_summaries', 'topic_summary_history']) {
+      const [columns] = await connection.execute('SELECT DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?', [table, 'summary']);
+      if (columns[0]?.DATA_TYPE?.toLowerCase() !== 'longtext') await connection.query(`ALTER TABLE \`${table}\` MODIFY COLUMN summary LONGTEXT NOT NULL`);
+    }
     await addCommissioningStations(connection);
     const email = process.env.BOOTSTRAP_EMAIL?.trim().toLowerCase();
     const password = process.env.BOOTSTRAP_PASSWORD;
