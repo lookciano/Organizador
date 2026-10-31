@@ -382,9 +382,10 @@ export async function summarizeTopicHistory({ projectName, topicPath, items, upd
       return [await summarizeBatch(batch, { includePrior: false, chunkChars: 3500 })];
     }
   };
-  const waveSize = items.length >= 20 ? 16 : 8;
+  const batchSize = items.length >= 20 ? 1 : 4;
+  const waveSize = items.length >= 20 ? 4 : 8;
   for (let start = 0; start < items.length; start += waveSize) {
-    const batches = Array.from({ length: waveSize / 4 }, (_, index) => items.slice(start + index * 4, start + (index + 1) * 4)).filter((batch) => batch.length);
+    const batches = Array.from({ length: waveSize / batchSize }, (_, index) => items.slice(start + index * batchSize, start + (index + 1) * batchSize)).filter((batch) => batch.length);
     const parts = await Promise.all(batches.map(summarizeWithFallback));
     for (const part of parts.flat()) {
       synthesis.bullets.push(...part.bullets);

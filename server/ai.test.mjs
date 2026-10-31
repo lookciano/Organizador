@@ -212,9 +212,11 @@ test('seção extensa analisa quatro lotes por vez e informa o avanço', async (
   let running = 0;
   let peak = 0;
   const progress = [];
+  const requestSizes = [];
   globalThis.fetch = async (_url, options) => {
     const request = JSON.parse(options.body);
     const ids = [...request.input[1].content[0].text.matchAll(/ESTADO ATUAL[^\n]*Assunto: Item (\d+)/g)].map((match) => match[1]);
+    requestSizes.push(ids.length);
     running++;
     peak = Math.max(peak, running);
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -226,7 +228,8 @@ test('seção extensa analisa quatro lotes por vez e informa o avanço', async (
     const items = Array.from({ length: 24 }, (_, index) => ({ id: String(index), title: `Item ${index}`, updated_at: '2026-10-24T10:00:00Z', status: 'pendente', summary: `Estado ${index}.`, location: '', responsible: '', supplier: '', due_date: '', attention: 0 }));
     const result = await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos', items, updates: [], onProgress: (value) => progress.push(value) });
     assert.equal(peak, 4);
-    assert.deepEqual(progress, [{ completed: 16, total: 24 }, { completed: 24, total: 24 }]);
+    assert.deepEqual(progress, [4, 8, 12, 16, 20, 24].map((completed) => ({ completed, total: 24 })));
+    assert.ok(requestSizes.every((size) => size === 1));
     assert.ok(result.summary.indexOf('• Item 0:') < result.summary.indexOf('• Item 23:'));
   } finally {
     globalThis.fetch = oldFetch;
