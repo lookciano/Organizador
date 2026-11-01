@@ -77,12 +77,13 @@ test('resumo executivo extenso incorpora todas as partes da síntese', async () 
     return { ok: true, json: async () => ({ output_text: JSON.stringify({ summary: `Resumo da parte ${requests.length}` }) }) };
   };
   try {
-    const synthesis = `${'• Subestação Alfa: pendência confirmada.\n'.repeat(500)}\n• Subestação Beta: entrega concluída.`;
+    const synthesis = `• Subestação Alfa — última informação em 30/10/2026\n${'  ◦ Ponto técnico: pendência confirmada.\n'.repeat(200)}\n• Subestação Beta — última informação em 30/10/2026\n  ◦ Entrega concluída.`;
     const result = await summarizeExecutive({ topicPath: 'Equipamentos', synthesis });
     assert.ok(requests.length >= 2);
-    assert.match(requests.at(-1), /Subestação Beta: entrega concluída/);
-    assert.match(requests[1], /Resumo da parte 1/);
-    assert.equal(result, `Resumo da parte ${requests.length}`);
+    assert.ok(requests.some((prompt) => /Subestação Beta/.test(prompt) && /Entrega concluída/.test(prompt)));
+    assert.ok(requests.some((prompt) => /Subestação Alfa/.test(prompt) && /Resumo da parte \d+/.test(prompt)));
+    assert.match(result, /• Subestação Alfa/);
+    assert.match(result, /• Subestação Beta/);
   } finally {
     globalThis.fetch = oldFetch;
     if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
@@ -98,9 +99,9 @@ test('resumo executivo divide trecho quando a LLM excede o limite de resposta', 
   globalThis.fetch = async (_url, options) => {
     const prompt = JSON.parse(options.body).input[1].content[0].text;
     const part = prompt.split('Texto da síntese detalhada desta parte:\n')[1];
-    if (part.length > 3_000) return { ok: true, json: async () => ({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output_text: '' }) };
+    if (part.length > 1_500) return { ok: true, json: async () => ({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output_text: '' }) };
     successfulPrompts.push(prompt);
-    const summary = `${prompt.includes('Subestação Alfa') || prompt.includes('Alfa;') ? 'Alfa; ' : ''}${part.includes('Subestação Beta') ? 'Beta' : ''}`;
+    const summary = prompt.includes('Subestação Alfa') ? 'Alfa;' : prompt.includes('Subestação Beta') ? 'Beta' : '';
     return { ok: true, json: async () => ({ output_text: JSON.stringify({ summary }) }) };
   };
   try {
@@ -108,7 +109,7 @@ test('resumo executivo divide trecho quando a LLM excede o limite de resposta', 
     const result = await summarizeExecutive({ topicPath: 'Equipamentos', synthesis });
     assert.match(result, /Alfa/);
     assert.match(result, /Beta/);
-    assert.ok(successfulPrompts.some((prompt) => prompt.includes('Resumo executivo acumulado') && prompt.includes('Alfa;')));
+    assert.ok(successfulPrompts.some((prompt) => prompt.includes('Resumo deste grupo nas partes anteriores') && prompt.includes('Alfa;')));
   } finally {
     globalThis.fetch = oldFetch;
     if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;

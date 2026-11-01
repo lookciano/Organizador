@@ -3,7 +3,7 @@ import { db } from './db.mjs';
 import { summarizeExecutive } from './ai.mjs';
 
 const hasModelKey = () => Boolean(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
-const sourceHash = (summary) => createHash('sha256').update(`executive-v2\n${summary}`).digest('hex');
+const sourceHash = (summary) => createHash('sha256').update(`executive-v3\n${summary}`).digest('hex');
 const active = new Set();
 const waiting = [];
 let running = 0;
@@ -16,7 +16,9 @@ async function generate(nodeId, projectId, hash) {
     const [sources] = await db().execute(`SELECT n.title,s.summary FROM topic_summaries s JOIN structure_nodes n ON n.id=s.node_id
       WHERE s.node_id=? AND s.project_id=? AND s.analysis_status='completed' AND n.parent_id IS NULL AND n.archived=0`, [nodeId, projectId]);
     if (!sources.length || sourceHash(sources[0].summary) !== hash) return;
-    const summary = await summarizeExecutive({ topicPath: sources[0].title, synthesis: sources[0].summary });
+    const summary = await summarizeExecutive({ topicPath: sources[0].title, synthesis: sources[0].summary,
+      onProgress: ({ completed, total }) => console.info('Progresso do resumo executivo:', nodeId, { subestacoesAnalisadas: completed, total }),
+    });
     const [saved] = await db().execute(`UPDATE topic_executive_summaries SET summary=?,analysis_status='completed',analysis_error=NULL,generated_at=?
       WHERE node_id=? AND project_id=? AND source_hash=? AND analysis_status='processing'`,
     [summary, new Date().toISOString(), nodeId, projectId, hash]);
