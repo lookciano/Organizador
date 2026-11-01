@@ -16,7 +16,7 @@ type HistoryEntry = { id: string; item_id: string; summary: string; evidence: st
 type TopicSummary = { node_id: string; summary: string; important_change: string; analysis_status: string; analysis_error: string | null; generated_at: string | null; progress_completed?: number; progress_total?: number };
 type ExecutiveSummary = { node_id: string; summary: string; analysis_status: string; analysis_error: string | null; generated_at: string | null };
 type State = { user: User; projects: Project[]; project?: Project; nodes?: Node[]; sources?: Source[]; items?: Item[]; members?: Member[]; invitations?: Invitation[]; contextEntries?: ContextEntry[]; topicSummaries?: TopicSummary[]; executiveSummaries?: ExecutiveSummary[] };
-type View = "brain" | "overview" | "items" | "organize" | "sources" | "context" | "structure" | "people" | "reports";
+type View = "brain" | "tasks" | "overview" | "items" | "organize" | "sources" | "context" | "structure" | "people" | "reports";
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, { credentials: "include", ...options, headers: { ...(options?.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...options?.headers } });
@@ -46,6 +46,7 @@ function categoryOptions(nodes: Node[]) {
 const statusName: Record<string, string> = { pendente: "Pendente", em_andamento: "Em andamento", bloqueado: "Bloqueado", concluido: "Concluído", informativo: "Informativo" };
 const views: { id: View; label: string; icon: string }[] = [
   { id: "brain", label: "Segundo Cérebro", icon: "✦" },
+  { id: "tasks", label: "Tarefas", icon: "☑" },
   { id: "overview", label: "Relatório vivo", icon: "◫" },
   { id: "items", label: "Assuntos", icon: "▤" },
   { id: "organize", label: "Organizar", icon: "✎" },
@@ -165,7 +166,8 @@ export default function App() {
       {error && <div className="alert error" role="alert">{error}<button onClick={() => setError("")}>×</button></div>}
       {notice && <div className="alert success" role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
       {!project ? <CreateProject onCreated={(id) => chooseProject(id)} setBusy={setBusy} busy={busy} setError={setError} /> : <div className="content">
-        {view === "brain" && project.id === projectId && <SecondBrainView key={projectId} projectId={projectId} items={items} />}
+        {view === "brain" && project.id === projectId && <SecondBrainView key={projectId} projectId={projectId} onOpenSource={(source) => { const item = items.find(i => i.id === source.item_id); if(item) void openItem(item); else setView(source.kind === "contexto" ? "context" : source.kind === "fonte" ? "sources" : "items"); }} />}
+        {view === "tasks" && project.id === projectId && <TasksView key={projectId} projectId={projectId} items={items} />}
         {view === "overview" && <LivingReportView project={project} items={items} nodes={nodes} topicSummaries={state.topicSummaries || []} executiveSummaries={state.executiveSummaries || []} syncedAt={syncedAt} onRefresh={() => refresh(projectId)} onOpen={openItem} onCompose={() => { setView("sources"); setComposerFocus((value) => value + 1); }} />}
         {view === "items" && <ItemsView items={items} nodes={nodes} onOpen={openItem} onManual={() => setShowManual(true)} />}
         {view === "organize" && <OrganizeView projectId={projectId} items={items} nodes={nodes} sources={sources} sourceId={reviewSourceId} onSourceChange={setReviewSourceId} onDirtyChange={setReviewDirty} onRefresh={after} onOpen={openItem} setError={setError} />}
@@ -228,7 +230,19 @@ function CategoryQuestion({ item, projectId, options, onRefresh }: { item: Item;
   }}>{busy ? "Analisando..." : "Tentar identificar com IA"}</button></div>{info && <small>{info}</small>}{error && <small role="alert">{error}</small>}</form>;
 }
 
-function TopicSynthesis({ value, onRetry, isMainSection = false }: { value?: TopicSummary; onRetry: () => Promise<void>; isMainSection?: boolean }) {
+export function CopyTextButton({ text, label }: { text: string; label: string }) {
+  const [notice,setNotice] = useState("");
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(()=>()=>clearTimeout(timer.current),[]);
+  return <span className="copy-text-control"><button type="button" className="copy-text-button" title={label} aria-label={label} onClick={async()=>{
+    clearTimeout(timer.current);
+    try { await navigator.clipboard.writeText(text); setNotice("Copiado"); }
+    catch { setNotice("Não foi possível copiar. Selecione o texto e copie manualmente."); }
+    timer.current=setTimeout(()=>setNotice(""),3000);
+  }}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg></button><span className="copy-text-notice" role="status">{notice}</span></span>;
+}
+
+export function TopicSynthesis({ value, onRetry, isMainSection = false }: { value?: TopicSummary; onRetry: () => Promise<void>; isMainSection?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const updating = ["pending", "processing"].includes(value?.analysis_status || "");
@@ -242,21 +256,21 @@ function TopicSynthesis({ value, onRetry, isMainSection = false }: { value?: Top
   }
   const bulletSummary = Boolean(value?.summary && /^[•\-*]\s/.test(value.summary));
   return <div className={`live-topic-synthesis${isMainSection ? " live-main-section-synthesis" : ""}`}>
-    <div className="live-synthesis-heading"><strong>{isMainSection ? "SÍNTESE GERAL DA SEÇÃO · POR SUBESTAÇÃO" : "SÍNTESE DO TÓPICO"}</strong><small>{updating ? `${progressLabel}${value?.generated_at ? ` · versão anterior: ${dateTime(value.generated_at)}` : ""}` : value?.generated_at ? `Gerada em ${dateTime(value.generated_at)}` : ""}</small></div>
+    <div className="live-synthesis-heading"><span className="summary-title"><strong>{isMainSection ? "SÍNTESE GERAL DA SEÇÃO · POR SUBESTAÇÃO" : "SÍNTESE DO TÓPICO"}</strong>{value?.summary && <CopyTextButton label="Copiar síntese" text={value.summary + (value.important_change ? `\n\nMudança relevante\n${value.important_change}` : "")} />}</span><small>{updating ? `${progressLabel}${value?.generated_at ? ` · versão anterior: ${dateTime(value.generated_at)}` : ""}` : value?.generated_at ? `Gerada em ${dateTime(value.generated_at)}` : ""}</small></div>
     {value?.summary ? bulletSummary ? <ul className="live-synthesis-points">{points.map((point, index) => <li key={index}>{point.text}{point.locations.length > 0 && <ul className="live-synthesis-locations">{point.locations.map((location, locationIndex) => <li key={locationIndex}>{location}</li>)}</ul>}</li>)}</ul> : <p>{value.summary}</p> : <p className="live-synthesis-placeholder">{unavailable ? "Síntese ainda indisponível." : "Analisando o histórico deste tópico..."}</p>}
     {value?.important_change && <div className="live-synthesis-change"><strong>Mudança relevante</strong><p>{value.important_change}</p></div>}
     {unavailable && <div className="live-synthesis-error"><span>Não foi possível atualizar a síntese.</span><button disabled={busy} onClick={async () => { setBusy(true); setError(""); try { await onRetry(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao tentar novamente"); } finally { setBusy(false); } }}>{busy ? "Tentando..." : "Tentar novamente"}</button>{error && <span role="alert">{error}</span>}</div>}
   </div>;
 }
 
-function ExecutiveSummaryView({ value, onRetry }: { value?: ExecutiveSummary; onRetry: () => Promise<void> }) {
+export function ExecutiveSummaryView({ value, onRetry }: { value?: ExecutiveSummary; onRetry: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const updating = ["pending", "processing", "waiting"].includes(value?.analysis_status || "");
   const unavailable = ["failed", "needs_key"].includes(value?.analysis_status || "");
   const status = value?.analysis_status === "waiting" ? "Aguardando a síntese detalhada" : value?.analysis_status === "pending" ? "Na fila para atualizar" : value?.analysis_status === "processing" ? "Preparando resumo" : "";
   return <div className="live-executive-summary">
-    <div className="live-synthesis-heading"><strong>RESUMO EXECUTIVO · POR SUBESTAÇÃO</strong><small>{updating ? `${status}${value?.generated_at ? ` · versão anterior: ${dateTime(value.generated_at)}` : ""}` : value?.generated_at ? `Atualizado em ${dateTime(value.generated_at)}` : ""}</small></div>
+    <div className="live-synthesis-heading"><span className="summary-title"><strong>RESUMO EXECUTIVO · POR SUBESTAÇÃO</strong>{value?.summary && <CopyTextButton label="Copiar resumo executivo" text={value.summary} />}</span><small>{updating ? `${status}${value?.generated_at ? ` · versão anterior: ${dateTime(value.generated_at)}` : ""}` : value?.generated_at ? `Atualizado em ${dateTime(value.generated_at)}` : ""}</small></div>
     {value?.summary ? <p>{value.summary}</p> : <p className="live-executive-placeholder">{unavailable ? "Resumo executivo indisponível." : "O resumo aparecerá após a síntese desta seção."}</p>}
     {unavailable && <div className="live-synthesis-error"><span>Não foi possível atualizar o resumo executivo.</span><button disabled={busy} onClick={async () => { setBusy(true); setError(""); try { await onRetry(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao tentar novamente"); } finally { setBusy(false); } }}>{busy ? "Tentando..." : "Tentar novamente"}</button>{error && <span role="alert">{error}</span>}</div>}
   </div>;
@@ -829,11 +843,50 @@ function ItemDrawer({ item, nodes, updates, projectId, close, onDone, setError }
   return <div className="drawer-backdrop" onMouseDown={close}><aside className="drawer" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={item.title}><button className="close" onClick={close}>×</button><div className="eyebrow">ASSUNTO DO PROJETO</div><h2>{item.title}</h2><Status item={item} /><p className="drawer-summary">{item.summary}</p><section className="latest-update-card"><small>ÚLTIMA ATUALIZAÇÃO · {date(item.latest_update_at || item.updated_at)}</small><p>{item.latest_update || item.summary || "Sem atualização resumida"}</p><span>{item.update_count || 0} registro(s) no histórico{item.latest_update_author ? ` · ${item.latest_update_author}` : ""}</span></section><div className="detail-grid"><div><small>LOCAL</small><strong>{item.location || "Não identificado"}</strong></div><div><small>DISCIPLINA</small><strong>{item.discipline || "Não identificada"}</strong></div><div><small>FONTE MAIS RECENTE</small><strong>{item.source_title || "Registro manual"}</strong></div><div><small>ATUALIZAÇÃO</small><strong>{date(item.latest_update_at || item.updated_at)}</strong></div></div><form className="drawer-form" onSubmit={async (event) => { event.preventDefault(); setBusy(true); try { await post(`/api/projects/${projectId}/items/${item.id}`, { nodeId, status, responsible, supplier, dueDate, note, attention }, "PATCH"); await onDone(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao atualizar"); } finally { setBusy(false); } }}><h3>Atualizar acompanhamento</h3><div className="form-grid"><label>Tópico<select value={nodeId} onChange={(event) => setNodeId(event.target.value)}><option value="">Aguardando confirmação</option>{categoryOptions(nodes).map((node) => <option key={node.id} value={node.id}>{node.label}</option>)}</select></label><label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}>{Object.entries(statusName).map(([key, value]) => <option key={key} value={key}>{value}</option>)}</select></label><label>Prazo<input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></label><label>Responsável<input value={responsible} onChange={(event) => setResponsible(event.target.value)} /></label><label>Fornecedor<input value={supplier} onChange={(event) => setSupplier(event.target.value)} /></label></div><label>Nota da atualização<textarea rows={2} value={note} onChange={(event) => setNote(event.target.value)} placeholder="O que mudou?" /></label><label className="check-row"><input type="checkbox" checked={attention} onChange={(event) => setAttention(event.target.checked)} />Ponto de atenção</label><button className="button primary" disabled={busy}>{busy ? "Salvando..." : "Salvar atualização"}</button></form><section className="timeline"><h3>Histórico e evidências</h3>{updates.map((update) => <div className="timeline-entry" key={update.id}><span className="timeline-dot" /><small>{date(update.created_at)} · {update.author_email || "Análise automática"}</small><p>{update.summary}</p>{update.evidence && <blockquote>“{update.evidence}”</blockquote>}{update.source_title && <small>Fonte: {update.source_title}</small>}</div>)}{!updates.length && <p className="muted-text">Nenhuma atualização registrada.</p>}</section></aside></div>;
 }
 
-type BrainResult = { kind: string; id: string; title?: string; summary?: string; excerpt?: string; evidence?: string; created_at?: string };
+type KnowledgeSource = { number: number; kind: string; id: string; item_id?: string; title: string; text: string; created_at: string; part: number };
+type KnowledgeAnswer = { status: "answered" | "unavailable" | "no_evidence"; paragraphs: { text: string; source_numbers: number[] }[]; sources: KnowledgeSource[]; warnings: string[]; message?: string };
+export function SecondBrainView({ projectId, onOpenSource }: { projectId: string; onOpenSource?: (source: KnowledgeSource) => void }) {
+  const [question,setQuestion] = useState("");
+  const [answer,setAnswer] = useState<KnowledgeAnswer | null>(null);
+  const [busy,setBusy] = useState(false);
+  const [error,setError] = useState("");
+  const requestVersion = useRef(0);
+  const pending = useRef(false);
+  useEffect(() => () => { requestVersion.current++; }, []);
+  const ask = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if(pending.current) return;
+    const version = ++requestVersion.current;
+    setAnswer(null);setError("");
+    if(question.trim().length < 3) {setError("Escreva uma pergunta com pelo menos três caracteres.");return;}
+    pending.current=true;setBusy(true);
+    try {
+      const result=await post<KnowledgeAnswer>(`/api/projects/${projectId}/knowledge/ask`,{question:question.trim()});
+      if(version===requestVersion.current) setAnswer(result);
+    } catch(cause) {if(version===requestVersion.current) setError(cause instanceof Error ? cause.message : "Não foi possível consultar o projeto.");}
+    finally {if(version===requestVersion.current){pending.current=false;setBusy(false);}}
+  };
+  const kindName: Record<string,string> = {assunto:"Assunto",historico:"Histórico",fonte:"Documento ou registro",contexto:"Contexto"};
+  return <div className="knowledge-view">
+    <section className="panel knowledge-question"><span className="eyebrow">SEGUNDO CÉREBRO</span><h1>Pergunte ao projeto</h1><p>Faça uma pergunta em suas palavras. A IA consulta os registros e documentos deste projeto e apresenta uma resposta com fontes para você conferir.</p>
+      <form onSubmit={ask}><label htmlFor="knowledge-question">O que você quer saber?</label><textarea id="knowledge-question" maxLength={1000} rows={3} value={question} onChange={e=>setQuestion(e.target.value)} placeholder="Me fale tudo sobre o cubículo de Ceará-Mirim" disabled={busy}/><button className="button primary" disabled={busy} type="submit">{busy?"Consultando registros e preparando resposta…":"Perguntar ao projeto"}</button></form>
+      {busy && <p role="status">Estou procurando evidências e organizando a resposta. Isso pode levar alguns instantes.</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+    </section>
+    {answer && <section className="panel knowledge-answer" aria-label="Resposta do projeto">
+      <h2>{answer.status==="answered"?"O que os registros mostram":"Registros consultados"}</h2>
+      {answer.message && <p role="status">{answer.message}</p>}
+      {answer.paragraphs.map((paragraph,i)=><p className="knowledge-paragraph" key={i}>{paragraph.text} <span className="knowledge-citations">{paragraph.source_numbers.map(n=><a key={n} href={`#knowledge-source-${n}`} aria-label={`Conferir fonte ${n}`}>[{n}]</a>)}</span></p>)}
+      {answer.warnings.map(w=><p key={w} className="knowledge-note" role="status">{w}</p>)}
+      {!!answer.sources.length && <><h3>Fontes e trechos consultados</h3><p className="muted-text">As datas abaixo indicam quando o registro foi inserido ou atualizado. A resposta pode ser parcial; confira as evidências antes de decidir.</p>
+        {answer.sources.map(source=><details id={`knowledge-source-${source.number}`} className="knowledge-source" key={source.number}><summary><strong>[{source.number}] {source.title}</strong><span>{kindName[source.kind] || source.kind} · {dateTime(source.created_at)} · trecho {source.part}</span></summary><p>{source.text}</p>{onOpenSource && <button className="button secondary" onClick={()=>onOpenSource(source)}>{source.item_id?"Abrir assunto e histórico":source.kind==="contexto"?"Abrir contexto":"Abrir registros do projeto"}</button>}</details>)}
+      </>}
+    </section>}
+  </div>;
+}
+
 type BrainTask = { id: string; title: string; description: string; responsible: string; due_date: string; status: string; item_id: string | null };
-export function SecondBrainView({ projectId, items }: { projectId: string; items: Item[] }) {
-  const [query,setQuery]=useState("");
-  const [results,setResults]=useState<BrainResult[]>([]);
+export function TasksView({ projectId, items }: { projectId: string; items: Item[] }) {
   const [tasks,setTasks]=useState<BrainTask[]>([]);
   const [title,setTitle]=useState("");
   const [responsible,setResponsible]=useState("");
@@ -842,19 +895,13 @@ export function SecondBrainView({ projectId, items }: { projectId: string; items
   const [message,setMessage]=useState("");
   const [saving,setSaving]=useState(false);
   const submitting=useRef(false);
-  const searchVersion=useRef(0);
   const loadVersion=useRef(0);
   const load=useCallback(async()=>{const version=++loadVersion.current;try {const data=await api<{tasks:BrainTask[]}>(`/api/projects/${projectId}/tasks`);if(version===loadVersion.current)setTasks(data.tasks);}catch(e){if(version===loadVersion.current)setMessage(String(e));}},[projectId]);
-  useEffect(()=>{void load();setResults([]);},[load]);
-  const search=async(e:React.FormEvent)=>{e.preventDefault();const version=++searchVersion.current;if(query.trim().length<2){setResults([]);setMessage("Informe pelo menos dois caracteres");return;}setMessage("");try{const data=await api<{results:BrainResult[]}>(`/api/projects/${projectId}/knowledge/search?q=${encodeURIComponent(query)}`);if(version!==searchVersion.current)return;setResults(data.results);setMessage(data.results.length?"":"Nenhum resultado encontrado");}catch(e){if(version===searchVersion.current){setResults([]);setMessage(String(e));}}};
+  useEffect(()=>{void load();},[load]);
   const add=async(e:React.FormEvent)=>{e.preventDefault();if(submitting.current)return;submitting.current=true;setSaving(true);try{await post(`/api/projects/${projectId}/tasks`,{title,responsible,due_date:due,item_id:itemId||null});setTitle("");setResponsible("");setDue("");setItemId("");setMessage("Tarefa criada");await load();}catch(e){setMessage(String(e));}finally{submitting.current=false;setSaving(false);}};
   const change=async(task:BrainTask,status:string)=>{try{await post(`/api/projects/${projectId}/tasks/${task.id}`,{status},"PATCH");await load();}catch(e){setMessage(String(e));}};
-  return <div className="brain-view" style={{display:"grid",gap:24}}>
-    <section className="panel"><h2>Buscar conhecimento</h2><p>Pesquise assuntos, históricos, fontes e contexto deste projeto. Os resultados apontam para registros existentes.</p>
-      <form onSubmit={search} style={{display:"flex",gap:8}}><input aria-label="Busca de conhecimento" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Ex.: Jussiape Siemens" style={{flex:1}}/><button className="button primary" type="submit">Buscar</button></form>
-      <div aria-live="polite">{results.map((r,i)=><article key={r.kind+r.id+i} style={{padding:"12px 0",borderBottom:"1px solid #ddd"}}><strong>{r.kind.toUpperCase()} · {r.title||r.id}</strong><p>{r.summary||r.excerpt||r.evidence||""}</p><small>ID da fonte: {r.id}</small></article>)}</div>
-    </section>
-    <section className="panel"><h2>Tarefas e compromissos</h2>
+  return <div className="tasks-view">
+    <section className="panel task-panel"><h1>Tarefas</h1><p>Organize compromissos deste projeto, com responsável, prazo e assunto relacionado.</p>
       <form onSubmit={add} style={{display:"grid",gap:8}}>
         <input aria-label="Nova tarefa" required maxLength={255} placeholder="Nova tarefa" value={title} onChange={e=>setTitle(e.target.value)}/>
         <input aria-label="Responsável pela tarefa" placeholder="Responsável" value={responsible} onChange={e=>setResponsible(e.target.value)}/>
@@ -862,7 +909,8 @@ export function SecondBrainView({ projectId, items }: { projectId: string; items
         <label>Assunto relacionado <select value={itemId} onChange={e=>setItemId(e.target.value)}><option value="">Sem vínculo</option>{items.map(i=><option key={i.id} value={i.id}>{i.title}</option>)}</select></label>
         <button className="button primary" type="submit" disabled={saving}>{saving?"Salvando...":"Criar tarefa"}</button>
       </form>
-      {tasks.map(t=><article key={t.id} style={{padding:"12px 0",borderBottom:"1px solid #ddd"}}><strong>{t.title}</strong><p>{t.responsible||"Sem responsável"} · {t.due_date||"Sem prazo"} · {t.status}</p><select aria-label={`Status de ${t.title}`} value={t.status} onChange={e=>void change(t,e.target.value)}><option value="pendente">Pendente</option><option value="em_andamento">Em andamento</option><option value="bloqueado">Bloqueado</option><option value="concluido">Concluído</option></select></article>)}
+      {!tasks.length && <p className="muted-text">Nenhuma tarefa neste projeto. Crie a primeira acima.</p>}
+      {tasks.map(t=><article key={t.id} style={{padding:"12px 0",borderBottom:"1px solid #ddd"}}><strong>{t.title}</strong><p>{t.responsible||"Sem responsável"} · {t.due_date||"Sem prazo"} · {statusName[t.status] || t.status}</p><select aria-label={`Status de ${t.title}`} value={t.status} onChange={e=>void change(t,e.target.value)}><option value="pendente">Pendente</option><option value="em_andamento">Em andamento</option><option value="bloqueado">Bloqueado</option><option value="concluido">Concluído</option></select></article>)}
     </section>{message&&<p role="status">{message}</p>}
   </div>;
 }
