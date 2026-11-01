@@ -20,7 +20,7 @@ services:
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_MODEL
-        value: deepseek/deepseek-v4.1-flash
+        value: deepseek/deepseek-v4.1-flash-1017
       - key: SMTP_HOST
         sync: false
       - key: SMTP_PORT
