@@ -140,6 +140,12 @@ const schema = [
     result_json LONGTEXT NOT NULL, updated_at VARCHAR(30) NOT NULL,
     INDEX (project_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS topic_executive_summaries (
+    node_id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL,
+    source_hash CHAR(64) NOT NULL, summary LONGTEXT NOT NULL,
+    analysis_status VARCHAR(30) NOT NULL, analysis_error TEXT,
+    generated_at VARCHAR(30), INDEX (project_id), INDEX (analysis_status)
+  )`,
   `CREATE TABLE IF NOT EXISTS app_migrations (
     project_id VARCHAR(36) NOT NULL, migration_key VARCHAR(100) NOT NULL,
     applied_at VARCHAR(30) NOT NULL, PRIMARY KEY (project_id, migration_key)

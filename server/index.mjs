@@ -8,6 +8,7 @@ import { db, createProject, initializeDatabase } from './db.mjs';
 import { analyzeProjectMatrix, classifyNode, extractItems } from './ai.mjs';
 import { extractFileText, MAX_SOURCE_TEXT } from './file-text.mjs';
 import { prepareTopicSummaries, refreshTopicSummariesForProject, retryTopicSummary } from './topic-summaries.mjs';
+import { prepareExecutiveSummaries, retryExecutiveSummary, resumeExecutiveSummaries } from './executive-summaries.mjs';
 import { exportStructureCsv, planStructureImport, structureRevision } from './structure-csv.mjs';
 import { loadProjectContext, projectContextWindow } from './project-context.mjs';
 
@@ -152,12 +153,19 @@ app.get('/api/state', requireUser, run(async (req, res) => {
     for (const source of sources) source.topic_count = bySource.get(source.id) || 0;
   }
   const topicSummaries = await prepareTopicSummaries(projectId, nodes, items);
-  res.json({ user: req.user, projects, project, nodes, sources, items, members, invitations, contextEntries, topicSummaries });
+  const executiveSummaries = await prepareExecutiveSummaries(projectId, nodes, topicSummaries);
+  res.json({ user: req.user, projects, project, nodes, sources, items, members, invitations, contextEntries, topicSummaries, executiveSummaries });
 }));
 
 app.post('/api/projects/:projectId/topics/:nodeId/summary/retry', requireUser, membership, run(async (req, res) => {
   const found = await retryTopicSummary(req.params.projectId, req.params.nodeId);
   if (!found) return fail(res, 404, 'Síntese não encontrada');
+  res.json({ status: 'pending' });
+}));
+
+app.post('/api/projects/:projectId/topics/:nodeId/executive/retry', requireUser, membership, run(async (req, res) => {
+  const found = await retryExecutiveSummary(req.params.projectId, req.params.nodeId);
+  if (!found) return fail(res, 404, 'Síntese principal não encontrada');
   res.json({ status: 'pending' });
 }));
 
@@ -763,5 +771,6 @@ const [unfinishedSources] = await db().execute("SELECT id,project_id FROM source
 for (const source of unfinishedSources) void startSourceProcessing(source.id, source.project_id);
 const [unfinishedSummaries] = await db().execute("SELECT DISTINCT project_id FROM topic_summaries WHERE analysis_status IN ('pending','processing') OR (analysis_status='failed' AND analysis_error LIKE '%Data too long for column%')");
 for (const project of unfinishedSummaries) updateTopicSummaries(project.project_id);
+void resumeExecutiveSummaries().catch((error) => console.error('Falha ao retomar resumos executivos:', error));
 const port = Number(process.env.PORT || 10000);
 app.listen(port, '0.0.0.0', () => console.log(`Organizador disponível na porta ${port}`));

@@ -14,7 +14,8 @@ type MatrixContextRow = { item_id: string; title: string; topic: string; respons
 type Update = { id: string; summary: string; evidence: string; previous_status: string | null; new_status: string; created_at: string; source_title: string | null; author_email: string | null };
 type HistoryEntry = { id: string; item_id: string; summary: string; evidence: string; created_at: string; source_title: string | null; author_email: string | null };
 type TopicSummary = { node_id: string; summary: string; important_change: string; analysis_status: string; analysis_error: string | null; generated_at: string | null; progress_completed?: number; progress_total?: number };
-type State = { user: User; projects: Project[]; project?: Project; nodes?: Node[]; sources?: Source[]; items?: Item[]; members?: Member[]; invitations?: Invitation[]; contextEntries?: ContextEntry[]; topicSummaries?: TopicSummary[] };
+type ExecutiveSummary = { node_id: string; summary: string; analysis_status: string; analysis_error: string | null; generated_at: string | null };
+type State = { user: User; projects: Project[]; project?: Project; nodes?: Node[]; sources?: Source[]; items?: Item[]; members?: Member[]; invitations?: Invitation[]; contextEntries?: ContextEntry[]; topicSummaries?: TopicSummary[]; executiveSummaries?: ExecutiveSummary[] };
 type View = "overview" | "items" | "organize" | "sources" | "context" | "structure" | "people" | "reports";
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
@@ -114,7 +115,7 @@ export default function App() {
     return () => { window.clearInterval(interval); document.removeEventListener("visibilitychange", updateIfVisible); };
   }, [Boolean(state), projectId, inviteToken, refresh]);
 
-  const hasProcessingSource = Boolean(state?.sources?.some((source) => ["pending", "processing"].includes(source.analysis_status)) || state?.topicSummaries?.some((summary) => ["pending", "processing"].includes(summary.analysis_status)));
+  const hasProcessingSource = Boolean(state?.sources?.some((source) => ["pending", "processing"].includes(source.analysis_status)) || state?.topicSummaries?.some((summary) => ["pending", "processing"].includes(summary.analysis_status)) || state?.executiveSummaries?.some((summary) => ["pending", "processing"].includes(summary.analysis_status)));
   useEffect(() => {
     if (!hasProcessingSource || !projectId) return;
     const interval = window.setInterval(() => { if (!document.hidden) void refresh(projectId); }, 8000);
@@ -163,7 +164,7 @@ export default function App() {
       {error && <div className="alert error" role="alert">{error}<button onClick={() => setError("")}>×</button></div>}
       {notice && <div className="alert success" role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
       {!project ? <CreateProject onCreated={(id) => chooseProject(id)} setBusy={setBusy} busy={busy} setError={setError} /> : <div className="content">
-        {view === "overview" && <LivingReportView project={project} items={items} nodes={nodes} topicSummaries={state.topicSummaries || []} syncedAt={syncedAt} onRefresh={() => refresh(projectId)} onOpen={openItem} onCompose={() => { setView("sources"); setComposerFocus((value) => value + 1); }} />}
+        {view === "overview" && <LivingReportView project={project} items={items} nodes={nodes} topicSummaries={state.topicSummaries || []} executiveSummaries={state.executiveSummaries || []} syncedAt={syncedAt} onRefresh={() => refresh(projectId)} onOpen={openItem} onCompose={() => { setView("sources"); setComposerFocus((value) => value + 1); }} />}
         {view === "items" && <ItemsView items={items} nodes={nodes} onOpen={openItem} onManual={() => setShowManual(true)} />}
         {view === "organize" && <OrganizeView projectId={projectId} items={items} nodes={nodes} sources={sources} sourceId={reviewSourceId} onSourceChange={setReviewSourceId} onDirtyChange={setReviewDirty} onRefresh={after} onOpen={openItem} setError={setError} />}
         {view === "sources" && <SourcesView sources={sources} projectId={projectId} onRefresh={after} onReview={(id) => { setReviewSourceId(id); setView("organize"); }} setError={setError} focusSignal={composerFocus} />}
@@ -246,6 +247,19 @@ function TopicSynthesis({ value, onRetry, isMainSection = false }: { value?: Top
   </div>;
 }
 
+function ExecutiveSummaryView({ value, onRetry }: { value?: ExecutiveSummary; onRetry: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const updating = ["pending", "processing", "waiting"].includes(value?.analysis_status || "");
+  const unavailable = ["failed", "needs_key"].includes(value?.analysis_status || "");
+  const status = value?.analysis_status === "waiting" ? "Aguardando a síntese detalhada" : value?.analysis_status === "pending" ? "Na fila para atualizar" : value?.analysis_status === "processing" ? "Preparando resumo" : "";
+  return <div className="live-executive-summary">
+    <div className="live-synthesis-heading"><strong>RESUMO EXECUTIVO · POR SUBESTAÇÃO</strong><small>{updating ? `${status}${value?.generated_at ? ` · versão anterior: ${dateTime(value.generated_at)}` : ""}` : value?.generated_at ? `Atualizado em ${dateTime(value.generated_at)}` : ""}</small></div>
+    {value?.summary ? <p>{value.summary}</p> : <p className="live-executive-placeholder">{unavailable ? "Resumo executivo indisponível." : "O resumo aparecerá após a síntese desta seção."}</p>}
+    {unavailable && <div className="live-synthesis-error"><span>Não foi possível atualizar o resumo executivo.</span><button disabled={busy} onClick={async () => { setBusy(true); setError(""); try { await onRetry(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao tentar novamente"); } finally { setBusy(false); } }}>{busy ? "Tentando..." : "Tentar novamente"}</button>{error && <span role="alert">{error}</span>}</div>}
+  </div>;
+}
+
 function TopicQuickUpdate({ projectId, node, onRefresh }: { projectId: string; node: Node; onRefresh: () => Promise<void> }) {
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
@@ -272,11 +286,12 @@ function TopicQuickUpdate({ projectId, node, onRefresh }: { projectId: string; n
   </form>;
 }
 
-function LivingReportView({ project, items, nodes, topicSummaries, syncedAt, onRefresh, onOpen, onCompose }: {
+function LivingReportView({ project, items, nodes, topicSummaries, executiveSummaries, syncedAt, onRefresh, onOpen, onCompose }: {
   project: Project;
   items: Item[];
   nodes: Node[];
   topicSummaries: TopicSummary[];
+  executiveSummaries: ExecutiveSummary[];
   syncedAt: string | null;
   onRefresh: () => Promise<void>;
   onOpen: (item: Item) => Promise<void>;
@@ -324,6 +339,7 @@ function LivingReportView({ project, items, nodes, topicSummaries, syncedAt, onR
   const unclassified = items.filter((item) => !item.node_id || !activeIds.has(item.node_id));
   const options = categoryOptions(nodes);
   const summaryByNode = new Map(topicSummaries.map((summary) => [summary.node_id, summary]));
+  const executiveByNode = new Map(executiveSummaries.map((summary) => [summary.node_id, summary]));
   const roots = childrenByParent.get(null) || [];
   const countUnder = (id: string): number => (itemsByNode.get(id)?.length || 0) + (childrenByParent.get(id) || []).reduce((total, child) => total + countUnder(child.id), 0);
   const historyNodesUnder = (id: string): string[] => [
@@ -379,6 +395,7 @@ function LivingReportView({ project, items, nodes, topicSummaries, syncedAt, onR
     const synthesis = summaryByNode.get(node.id);
     return <section className={`live-node live-depth-${Math.min(depth, 2)}`} id={`topico-${node.id}`} key={node.id}>
       <div className="live-node-heading">{depth === 0 && <span className="live-section-number">{String(sectionNumber || 1).padStart(2, "0")}</span>}<div>{title}{depth === 0 && <small>{total} assunto(s) com informação</small>}</div></div>
+      {total > 0 && depth === 0 && <ExecutiveSummaryView value={executiveByNode.get(node.id)} onRetry={async () => { await post(`/api/projects/${project.id}/topics/${node.id}/executive/retry`, {}); await onRefresh(); }} />}
       {total > 0 && <TopicSynthesis value={synthesis} isMainSection={depth === 0} onRetry={async () => { await post(`/api/projects/${project.id}/topics/${node.id}/summary/retry`, {}); await onRefresh(); }} />}
       <TopicQuickUpdate projectId={project.id} node={node} onRefresh={onRefresh} />
       {total > 0 && <button type="button" className="live-history-toggle" aria-expanded={historyOpen} aria-label={`${historyOpen ? "Ocultar" : "Ver"} histórico e fontes de ${node.title}`} onClick={() => toggleHistory(node.id)}><span aria-hidden="true">{historyOpen ? "⌃" : "⌄"}</span>{historyOpen ? "Ocultar histórico e fontes" : "Ver histórico e fontes"}<small>{total} assunto(s)</small></button>}

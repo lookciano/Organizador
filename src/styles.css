@@ -67,6 +67,11 @@
 .live-node-heading small{display:block;color:#8ba092;font-size:10px;margin-top:4px}
 .live-section-number{font-family:Manrope,sans-serif;color:#72a58a;font-size:14px;font-weight:800}
 .live-topic-synthesis{background:#f0f7f2;border:1px solid #d9e9dc;border-radius:10px;padding:15px 17px;margin:0 0 17px;break-inside:avoid}
+.live-executive-summary{background:#f2f5fa;border:1px solid #d7e1ed;border-left:3px solid #7a9dc2;border-radius:10px;padding:17px 19px;margin:0 0 12px;break-inside:avoid}
+.live-executive-summary .live-synthesis-heading strong{color:#365d84}
+.live-executive-summary .live-synthesis-heading small{color:#7189a2}
+.live-executive-summary>p{white-space:pre-wrap;color:#294a66;font-size:13px;line-height:1.7;margin:11px 0 0}
+.live-executive-summary .live-executive-placeholder{color:#8192a4}
 .live-synthesis-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .live-synthesis-heading strong{color:#3b7657;font-size:10px;letter-spacing:.08em}
 .live-synthesis-heading small{color:#819b88;font-size:10px}

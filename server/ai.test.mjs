@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeProjectMatrix, classifyNode, extractItems, structurePaths, summarizeTopicHistory } from './ai.mjs';
+import { analyzeProjectMatrix, classifyNode, extractItems, structurePaths, summarizeExecutive, summarizeTopicHistory } from './ai.mjs';
 import { splitForAnalysis } from './file-text.mjs';
 
 const nodes = [
@@ -53,6 +53,40 @@ test('OpenRouter usa DeepSeek V4.1 Flash como modelo padrão', async () => {
   } finally {
     if (previous === undefined) delete process.env.OPENROUTER_MODEL;
     else process.env.OPENROUTER_MODEL = previous;
+  }
+});
+
+test('resumo executivo usa a síntese detalhada e pede organização por subestação', async () => {
+  await mockAnalysis({ summary: 'Subestação Ourolândia: revisão pendente com Ana.' }, async (request) => {
+    const result = await summarizeExecutive({ topicPath: 'Equipamentos', synthesis: '• Subestação Ourolândia\n  ◦ Disjuntores: revisão pendente com Ana.' });
+    assert.match(result, /Subestação Ourolândia/);
+    assert.match(request().input[0].content, /Organizar o texto da sintese e criar um resumo executivo de preferencia organizado por subestação/);
+    assert.match(request().input[1].content[0].text, /Disjuntores: revisão pendente com Ana/);
+    assert.equal(request().text.format.name, 'executive_summary');
+  });
+});
+
+test('resumo executivo extenso incorpora todas as partes da síntese', async () => {
+  const previousKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const requests = [];
+  globalThis.fetch = async (_url, options) => {
+    const prompt = JSON.parse(options.body).input[1].content[0].text;
+    requests.push(prompt);
+    return { ok: true, json: async () => ({ output_text: JSON.stringify({ summary: `Resumo da parte ${requests.length}` }) }) };
+  };
+  try {
+    const synthesis = `${'• Subestação Alfa: pendência confirmada.\n'.repeat(500)}\n• Subestação Beta: entrega concluída.`;
+    const result = await summarizeExecutive({ topicPath: 'Equipamentos', synthesis });
+    assert.ok(requests.length >= 2);
+    assert.match(requests.at(-1), /Subestação Beta: entrega concluída/);
+    assert.match(requests[1], /Resumo da parte 1/);
+    assert.equal(result, `Resumo da parte ${requests.length}`);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = previousKey;
   }
 });
 

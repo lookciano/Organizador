@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { db } from './db.mjs';
 import { structurePaths, summarizeTopicHistory } from './ai.mjs';
 import { loadProjectContext, selectProjectContext } from './project-context.mjs';
+import { prepareExecutiveSummaries } from './executive-summaries.mjs';
 
 const hasModelKey = () => Boolean(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
 const SUMMARY_VERSION = 8;
@@ -105,6 +106,10 @@ async function generate(nodeId, projectId, revision) {
         [nodeId, projectId, revision, result.summary, result.importantChange, generatedAt]);
       if (saved.affectedRows) await connection.execute('DELETE FROM topic_summary_progress WHERE node_id=? AND project_id=? AND revision=?', [nodeId, projectId, revision]);
       await connection.commit();
+      if (saved.affectedRows && !node.parent_id) {
+        void prepareExecutiveSummaries(projectId, [node], [{ node_id: nodeId, summary: result.summary, analysis_status: 'completed' }])
+          .catch((error) => console.error('Falha ao agendar resumo executivo:', nodeId, error));
+      }
       console.info('Síntese concluída:', nodeId, { segundos: Math.round((Date.now() - started) / 1000), assuntos: items.length });
     } catch (error) { await connection.rollback(); throw error; }
     finally { connection.release(); }
