@@ -166,3 +166,30 @@
 .context-page{max-width:1100px}.context-composer{padding:22px;margin-bottom:24px}.context-composer>label{display:block;font-size:14px;font-weight:800;color:#25443e;margin-bottom:10px}.context-composer textarea{width:100%;min-height:130px;resize:vertical;border:1px solid #cbdcd1;border-radius:9px;padding:13px;font:inherit;color:#25443e;background:#fff}.context-composer-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:12px}.context-composer-actions>.button:last-child{margin-left:auto}.context-composer>small{display:block;margin-top:10px;color:#71867d;font-size:11px}.context-attachment{display:inline-flex;align-items:center;gap:8px;color:#315e55;background:#edf6ef;padding:8px 10px;border-radius:7px;font-size:11px;max-width:100%;overflow-wrap:anywhere}.context-attachment button{border:0;background:none;color:#315e55;font-size:17px;cursor:pointer}.context-list-heading{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:0 0 13px}.context-list-heading h2{font-size:17px;color:#25443e;margin:0}.context-list-heading label{font-size:11px;color:#557467}.context-list{display:grid;gap:12px}.context-card{padding:18px 21px;overflow-wrap:anywhere}.context-card.archived{opacity:.68}.context-card-top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.context-card-top strong{display:block;color:#25443e;font-size:13px}.context-card-top small{display:block;color:#81948d;font-size:10px;margin-top:5px}.context-card-top button,.context-expand{border:0;background:none;color:#16746c;font-size:11px;font-weight:800;cursor:pointer}.context-card>p{white-space:pre-wrap;line-height:1.65;font-size:12px;color:#4d6664}.context-card .context-excerpt{background:#f6faf7;border-left:2px solid #b6d6c2;padding:10px 12px;max-height:320px;overflow:auto}.context-file{display:inline-block;font-size:11px;color:#16746c;margin-top:12px}.context-expand{display:block;margin-top:10px;padding:0}.matrix-context{border:1px solid #d9e9dd;border-radius:11px;background:#f5faf6;padding:18px 20px;margin:15px 0 18px}.matrix-context-head{display:flex;justify-content:space-between;align-items:center;gap:18px}.matrix-context-head h3{font-size:15px;color:#25443e;margin:0 0 5px}.matrix-context-head p{font-size:11px;color:#617d70;line-height:1.55;margin:0}.matrix-context-head .button{flex:0 0 auto}.matrix-context-hint{font-size:11px;color:#789273;margin:10px 0 0}.matrix-context>small{display:block;margin:12px 0 8px;color:#71867d}.matrix-context-table{overflow-x:auto}.matrix-context-table table{width:100%;border-collapse:collapse;background:#fff}.matrix-context-table th,.matrix-context-table td{border-bottom:1px solid #e6eee8;padding:10px;text-align:left;vertical-align:top;min-width:140px;font-size:11px;line-height:1.5}.matrix-context-table th{color:#385c4f;background:#edf5ef}.matrix-context-table td strong,.matrix-context-table td small{display:block}.matrix-context-table td small{color:#698477;margin-top:5px}
 @media(max-width:720px){.context-composer-actions>.button:last-child{margin-left:0;width:100%}.matrix-context-head{align-items:stretch;flex-direction:column}.matrix-context-head .button{width:100%}}
 @media print{.context-composer,.context-card-top button,.context-expand,.matrix-context-head .button{display:none!important}}
+
+/* Project questions and the independent task workspace. */
+.knowledge-view,.tasks-view{display:grid;gap:22px;max-width:1100px;margin:0 auto}
+.knowledge-question,.knowledge-answer,.task-panel{padding:26px}
+.knowledge-question h1,.task-panel h1{margin:8px 0 10px;font-size:26px;color:#203e3c}
+.knowledge-question>p,.task-panel>p{color:#617b77;line-height:1.65}
+.knowledge-question form{display:grid;gap:12px;margin-top:22px}
+.knowledge-question textarea{width:100%;resize:vertical;min-height:100px;border:1px solid #cdded6;border-radius:10px;padding:13px;font:inherit;line-height:1.6}
+.knowledge-question form button{justify-self:start}
+.knowledge-paragraph{white-space:pre-wrap;line-height:1.8;color:#294a44}
+.knowledge-citations{display:inline-flex;gap:5px;font-size:12px;font-weight:700}
+.knowledge-citations a{color:#176f63;text-decoration:none}
+.knowledge-note{padding:12px;background:#f3f7f4;border-radius:8px;color:#657e75;font-size:12px;line-height:1.6}
+.knowledge-source{padding:16px 0;border-top:1px solid #e3ece6;scroll-margin-top:24px}
+.knowledge-source summary{cursor:pointer;color:#2c5950}
+.knowledge-source summary span{display:block;font-size:11px;color:#7c918b;margin:5px 0 0 16px}
+.knowledge-source p{white-space:pre-wrap;line-height:1.7;font-size:13px;color:#547068}
+.copy-text-control{display:inline-flex;align-items:center;gap:5px;margin-left:4px}
+.copy-text-button{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:4px;border:0;background:transparent;color:#6c8981;opacity:.65;border-radius:5px;cursor:pointer;flex-shrink:0}
+.copy-text-button:hover,.copy-text-button:focus-visible{opacity:1;background:#e6f0eb;color:#176f63}
+.copy-text-button:focus-visible{outline:2px solid #357e6d;outline-offset:2px}
+.copy-text-notice{font-size:10px;color:#52766b;max-width:180px}
+@media(max-width:640px){.knowledge-question,.knowledge-answer,.task-panel{padding:18px}.knowledge-question h1,.task-panel h1{font-size:23px}.knowledge-question form button{width:100%;justify-self:stretch}.live-synthesis-heading{flex-wrap:wrap}}
+@media print{.copy-text-control{display:none}}
+.summary-title{display:inline-flex;align-items:center;gap:3px}
+.copy-text-control{position:relative}
+.copy-text-notice{position:absolute;left:0;top:100%;z-index:1;min-width:48px;font-weight:500;letter-spacing:normal}

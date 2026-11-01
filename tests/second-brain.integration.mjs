@@ -37,7 +37,7 @@ test('PR #1: TiDB migration, authorization and regression', { skip: !target, tim
   for (const suffix of ['a', 'b']) {
     await admin.execute('INSERT INTO projects VALUES (?,?,?,?,?)', [`project-${suffix}`, `Projeto ${suffix}`, 'Synthetic', `owner-${suffix}`, stamp]);
     await admin.execute('INSERT INTO memberships VALUES (?,?,?,?)', [`project-${suffix}`, `owner-${suffix}`, 'owner', stamp]);
-    await admin.execute('INSERT INTO items (id,project_id,title,summary,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?)', [`item-${suffix}`, `project-${suffix}`, `Teste exclusivo ${suffix} 100%`, `Evidência ${suffix}`, 'pendente', stamp, stamp]);
+    await admin.execute('INSERT INTO items (id,project_id,title,summary,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?)', [`item-${suffix}`, `project-${suffix}`, `Teste exclusivo ${suffix} 100% — Cubículo Ceará-Mirim`, `Evidência ${suffix}`, 'pendente', stamp, stamp]);
     await admin.execute('INSERT INTO item_updates (id,item_id,summary,evidence,new_status,created_at) VALUES (?,?,?,?,?,?)', [`update-${suffix}`, `item-${suffix}`, `Teste histórico ${suffix}`, `Evidência ${suffix}`, 'pendente', stamp]);
     await admin.execute('INSERT INTO sources (id,project_id,author_id,title,kind,body,analysis_status,created_at) VALUES (?,?,?,?,?,?,?,?)', [`source-${suffix}`, `project-${suffix}`, `owner-${suffix}`, `Teste fonte ${suffix}`, 'text', `Teste corpo ${suffix}`, 'done', stamp]);
     await admin.execute('INSERT INTO project_context_entries (id,project_id,author_id,title,body,extracted_text,archived,created_at) VALUES (?,?,?,?,?,?,?,?)', [`context-${suffix}`, `project-${suffix}`, `owner-${suffix}`, `Teste contexto ${suffix}`, 'Synthetic', `Teste contexto ${suffix}`, 0, stamp]);
@@ -184,6 +184,24 @@ test('PR #1: TiDB migration, authorization and regression', { skip: !target, tim
     const transport=nodemailer.createTransport({streamTransport:true,buffer:true,newline:'unix'});
     const result=await transport.sendMail({from:'noreply@example.invalid',to:'member@example.invalid',subject:'Convite para Projeto teste',text:'Convite sintético para teste local.'});
     assert.deepEqual(result.envelope.to,['member@example.invalid']); assert.match(result.message.toString(),/Subject: Convite/);
+  });
+  await t.test('natural language retrieval finds an unaccented equipment/location question without an AI key', async () => {
+    const result=await request('/api/projects/project-a/knowledge/ask',{method:'POST',body:{question:'me fala tudo sobre o cubículo de Ceara Mirim'}});
+    assert.equal(result.status,200);assert.equal(result.data.status,'unavailable');
+    assert.ok(result.data.sources.some(s=>s.kind==='assunto' && s.id==='item-a'));
+    assert.ok(result.data.sources.every(s=>!s.id.endsWith('-b')));
+    assert.deepEqual(result.data.paragraphs,[]);
+  });
+  await t.test('AI question endpoint enforces membership, authentication, origin and input validation', async () => {
+    const path='/api/projects/project-a/knowledge/ask',body={question:'Cubículo Ceará Mirim'};
+    assert.equal((await request(path,{user:'',method:'POST',body})).status,401);
+    assert.equal((await request(path,{user:'owner-b',method:'POST',body})).status,403);
+    assert.equal((await request(path,{method:'POST',body,requestOrigin:'https://untrusted.example.invalid'})).status,403);
+    for(const question of ['',{},'a'.repeat(1001)]) assert.equal((await request(path,{method:'POST',body:{question}})).status,400);
+  });
+  await t.test('questions without evidence return no fabricated answer or unrelated source', async () => {
+    const result=await request('/api/projects/project-a/knowledge/ask',{method:'POST',body:{question:'Telescópio orbital plutoniano'}});
+    assert.equal(result.status,200);assert.equal(result.data.status,'no_evidence');assert.deepEqual(result.data.sources,[]);
   });
   await t.test('logout invalidates the existing session', async () => {
     assert.equal((await request('/api/auth/logout',{method:'POST',body:{}})).status,200);
