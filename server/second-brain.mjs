@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { db } from './db.mjs';
 
 const clean = (value, max = 500) => String(value ?? '').trim().slice(0, max);
-const validDate = (value) => !value || /^\d{4}-\d{2}-\d{2}$/.test(value);
+const validDate = (value) => {
+  if (value === '') return true;
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+};
 const statuses = new Set(['pendente', 'em_andamento', 'bloqueado', 'concluido']);
 const now = () => new Date().toISOString();
 
@@ -32,7 +37,7 @@ export function registerSecondBrainRoutes(app, requireUser, membership, run) {
     res.json({tasks:rows});
   }));
   app.post('/api/projects/:projectId/tasks', ...guard, run(async (req,res)=>{
-    const title=clean(req.body.title,255), dueDate=clean(req.body.due_date,10);
+    const title=clean(req.body.title,255), dueDate=req.body.due_date ?? '';
     const status=clean(req.body.status,30)||'pendente';
     const itemId=clean(req.body.item_id,36)||null;
     if(!title || !validDate(dueDate) || !statuses.has(status)) return res.status(400).json({error:'Dados da tarefa inválidos'});
@@ -49,7 +54,7 @@ export function registerSecondBrainRoutes(app, requireUser, membership, run) {
     const [rows]=await db().execute('SELECT * FROM second_brain_tasks WHERE id=? AND project_id=?',[req.params.taskId,req.params.projectId]);
     if(!rows.length) return res.status(404).json({error:'Tarefa não encontrada'});
     const old=rows[0], title=req.body.title===undefined?old.title:clean(req.body.title,255);
-    const dueDate=req.body.due_date===undefined?old.due_date:clean(req.body.due_date,10);
+    const dueDate=req.body.due_date===undefined?old.due_date:req.body.due_date;
     const status=req.body.status===undefined?old.status:clean(req.body.status,30);
     if(!title || !validDate(dueDate) || !statuses.has(status)) return res.status(400).json({error:'Dados inválidos'});
     await db().execute('UPDATE second_brain_tasks SET title=?,description=?,responsible=?,due_date=?,status=?,updated_at=? WHERE id=? AND project_id=?',
