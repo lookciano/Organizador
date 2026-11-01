@@ -16,7 +16,7 @@ type HistoryEntry = { id: string; item_id: string; summary: string; evidence: st
 type TopicSummary = { node_id: string; summary: string; important_change: string; analysis_status: string; analysis_error: string | null; generated_at: string | null; progress_completed?: number; progress_total?: number };
 type ExecutiveSummary = { node_id: string; summary: string; analysis_status: string; analysis_error: string | null; generated_at: string | null };
 type State = { user: User; projects: Project[]; project?: Project; nodes?: Node[]; sources?: Source[]; items?: Item[]; members?: Member[]; invitations?: Invitation[]; contextEntries?: ContextEntry[]; topicSummaries?: TopicSummary[]; executiveSummaries?: ExecutiveSummary[] };
-type View = "overview" | "items" | "organize" | "sources" | "context" | "structure" | "people" | "reports";
+type View = "brain" | "overview" | "items" | "organize" | "sources" | "context" | "structure" | "people" | "reports";
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, { credentials: "include", ...options, headers: { ...(options?.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...options?.headers } });
@@ -45,6 +45,7 @@ function categoryOptions(nodes: Node[]) {
 }
 const statusName: Record<string, string> = { pendente: "Pendente", em_andamento: "Em andamento", bloqueado: "Bloqueado", concluido: "Concluído", informativo: "Informativo" };
 const views: { id: View; label: string; icon: string }[] = [
+  { id: "brain", label: "Segundo Cérebro", icon: "✦" },
   { id: "overview", label: "Relatório vivo", icon: "◫" },
   { id: "items", label: "Assuntos", icon: "▤" },
   { id: "organize", label: "Organizar", icon: "✎" },
@@ -164,6 +165,7 @@ export default function App() {
       {error && <div className="alert error" role="alert">{error}<button onClick={() => setError("")}>×</button></div>}
       {notice && <div className="alert success" role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
       {!project ? <CreateProject onCreated={(id) => chooseProject(id)} setBusy={setBusy} busy={busy} setError={setError} /> : <div className="content">
+        {view === "brain" && project.id === projectId && <SecondBrainView key={projectId} projectId={projectId} items={items} />}
         {view === "overview" && <LivingReportView project={project} items={items} nodes={nodes} topicSummaries={state.topicSummaries || []} executiveSummaries={state.executiveSummaries || []} syncedAt={syncedAt} onRefresh={() => refresh(projectId)} onOpen={openItem} onCompose={() => { setView("sources"); setComposerFocus((value) => value + 1); }} />}
         {view === "items" && <ItemsView items={items} nodes={nodes} onOpen={openItem} onManual={() => setShowManual(true)} />}
         {view === "organize" && <OrganizeView projectId={projectId} items={items} nodes={nodes} sources={sources} sourceId={reviewSourceId} onSourceChange={setReviewSourceId} onDirtyChange={setReviewDirty} onRefresh={after} onOpen={openItem} setError={setError} />}
@@ -825,4 +827,42 @@ function ManualModal({ projectId, nodes, close, onDone, setError }: { projectId:
 function ItemDrawer({ item, nodes, updates, projectId, close, onDone, setError }: { item: Item; nodes: Node[]; updates: Update[]; projectId: string; close: () => void; onDone: () => Promise<void>; setError: (value: string) => void }) {
   const [status, setStatus] = useState(item.status); const [nodeId, setNodeId] = useState(nodes.some((node) => node.id === item.node_id && !node.archived) ? item.node_id || "" : ""); const [responsible, setResponsible] = useState(item.responsible); const [supplier, setSupplier] = useState(item.supplier); const [dueDate, setDueDate] = useState(item.due_date); const [note, setNote] = useState(""); const [attention, setAttention] = useState(Boolean(item.attention)); const [busy, setBusy] = useState(false);
   return <div className="drawer-backdrop" onMouseDown={close}><aside className="drawer" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={item.title}><button className="close" onClick={close}>×</button><div className="eyebrow">ASSUNTO DO PROJETO</div><h2>{item.title}</h2><Status item={item} /><p className="drawer-summary">{item.summary}</p><section className="latest-update-card"><small>ÚLTIMA ATUALIZAÇÃO · {date(item.latest_update_at || item.updated_at)}</small><p>{item.latest_update || item.summary || "Sem atualização resumida"}</p><span>{item.update_count || 0} registro(s) no histórico{item.latest_update_author ? ` · ${item.latest_update_author}` : ""}</span></section><div className="detail-grid"><div><small>LOCAL</small><strong>{item.location || "Não identificado"}</strong></div><div><small>DISCIPLINA</small><strong>{item.discipline || "Não identificada"}</strong></div><div><small>FONTE MAIS RECENTE</small><strong>{item.source_title || "Registro manual"}</strong></div><div><small>ATUALIZAÇÃO</small><strong>{date(item.latest_update_at || item.updated_at)}</strong></div></div><form className="drawer-form" onSubmit={async (event) => { event.preventDefault(); setBusy(true); try { await post(`/api/projects/${projectId}/items/${item.id}`, { nodeId, status, responsible, supplier, dueDate, note, attention }, "PATCH"); await onDone(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao atualizar"); } finally { setBusy(false); } }}><h3>Atualizar acompanhamento</h3><div className="form-grid"><label>Tópico<select value={nodeId} onChange={(event) => setNodeId(event.target.value)}><option value="">Aguardando confirmação</option>{categoryOptions(nodes).map((node) => <option key={node.id} value={node.id}>{node.label}</option>)}</select></label><label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}>{Object.entries(statusName).map(([key, value]) => <option key={key} value={key}>{value}</option>)}</select></label><label>Prazo<input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></label><label>Responsável<input value={responsible} onChange={(event) => setResponsible(event.target.value)} /></label><label>Fornecedor<input value={supplier} onChange={(event) => setSupplier(event.target.value)} /></label></div><label>Nota da atualização<textarea rows={2} value={note} onChange={(event) => setNote(event.target.value)} placeholder="O que mudou?" /></label><label className="check-row"><input type="checkbox" checked={attention} onChange={(event) => setAttention(event.target.checked)} />Ponto de atenção</label><button className="button primary" disabled={busy}>{busy ? "Salvando..." : "Salvar atualização"}</button></form><section className="timeline"><h3>Histórico e evidências</h3>{updates.map((update) => <div className="timeline-entry" key={update.id}><span className="timeline-dot" /><small>{date(update.created_at)} · {update.author_email || "Análise automática"}</small><p>{update.summary}</p>{update.evidence && <blockquote>“{update.evidence}”</blockquote>}{update.source_title && <small>Fonte: {update.source_title}</small>}</div>)}{!updates.length && <p className="muted-text">Nenhuma atualização registrada.</p>}</section></aside></div>;
+}
+
+type BrainResult = { kind: string; id: string; title?: string; summary?: string; excerpt?: string; evidence?: string; created_at?: string };
+type BrainTask = { id: string; title: string; description: string; responsible: string; due_date: string; status: string; item_id: string | null };
+export function SecondBrainView({ projectId, items }: { projectId: string; items: Item[] }) {
+  const [query,setQuery]=useState("");
+  const [results,setResults]=useState<BrainResult[]>([]);
+  const [tasks,setTasks]=useState<BrainTask[]>([]);
+  const [title,setTitle]=useState("");
+  const [responsible,setResponsible]=useState("");
+  const [due,setDue]=useState("");
+  const [itemId,setItemId]=useState("");
+  const [message,setMessage]=useState("");
+  const [saving,setSaving]=useState(false);
+  const submitting=useRef(false);
+  const searchVersion=useRef(0);
+  const loadVersion=useRef(0);
+  const load=useCallback(async()=>{const version=++loadVersion.current;try {const data=await api<{tasks:BrainTask[]}>(`/api/projects/${projectId}/tasks`);if(version===loadVersion.current)setTasks(data.tasks);}catch(e){if(version===loadVersion.current)setMessage(String(e));}},[projectId]);
+  useEffect(()=>{void load();setResults([]);},[load]);
+  const search=async(e:React.FormEvent)=>{e.preventDefault();const version=++searchVersion.current;if(query.trim().length<2){setResults([]);setMessage("Informe pelo menos dois caracteres");return;}setMessage("");try{const data=await api<{results:BrainResult[]}>(`/api/projects/${projectId}/knowledge/search?q=${encodeURIComponent(query)}`);if(version!==searchVersion.current)return;setResults(data.results);setMessage(data.results.length?"":"Nenhum resultado encontrado");}catch(e){if(version===searchVersion.current){setResults([]);setMessage(String(e));}}};
+  const add=async(e:React.FormEvent)=>{e.preventDefault();if(submitting.current)return;submitting.current=true;setSaving(true);try{await post(`/api/projects/${projectId}/tasks`,{title,responsible,due_date:due,item_id:itemId||null});setTitle("");setResponsible("");setDue("");setItemId("");setMessage("Tarefa criada");await load();}catch(e){setMessage(String(e));}finally{submitting.current=false;setSaving(false);}};
+  const change=async(task:BrainTask,status:string)=>{try{await post(`/api/projects/${projectId}/tasks/${task.id}`,{status},"PATCH");await load();}catch(e){setMessage(String(e));}};
+  return <div className="brain-view" style={{display:"grid",gap:24}}>
+    <section className="panel"><h2>Buscar conhecimento</h2><p>Pesquise assuntos, históricos, fontes e contexto deste projeto. Os resultados apontam para registros existentes.</p>
+      <form onSubmit={search} style={{display:"flex",gap:8}}><input aria-label="Busca de conhecimento" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Ex.: Jussiape Siemens" style={{flex:1}}/><button className="button primary" type="submit">Buscar</button></form>
+      <div aria-live="polite">{results.map((r,i)=><article key={r.kind+r.id+i} style={{padding:"12px 0",borderBottom:"1px solid #ddd"}}><strong>{r.kind.toUpperCase()} · {r.title||r.id}</strong><p>{r.summary||r.excerpt||r.evidence||""}</p><small>ID da fonte: {r.id}</small></article>)}</div>
+    </section>
+    <section className="panel"><h2>Tarefas e compromissos</h2>
+      <form onSubmit={add} style={{display:"grid",gap:8}}>
+        <input aria-label="Nova tarefa" required maxLength={255} placeholder="Nova tarefa" value={title} onChange={e=>setTitle(e.target.value)}/>
+        <input aria-label="Responsável pela tarefa" placeholder="Responsável" value={responsible} onChange={e=>setResponsible(e.target.value)}/>
+        <label>Prazo <input type="date" value={due} onChange={e=>setDue(e.target.value)}/></label>
+        <label>Assunto relacionado <select value={itemId} onChange={e=>setItemId(e.target.value)}><option value="">Sem vínculo</option>{items.map(i=><option key={i.id} value={i.id}>{i.title}</option>)}</select></label>
+        <button className="button primary" type="submit" disabled={saving}>{saving?"Salvando...":"Criar tarefa"}</button>
+      </form>
+      {tasks.map(t=><article key={t.id} style={{padding:"12px 0",borderBottom:"1px solid #ddd"}}><strong>{t.title}</strong><p>{t.responsible||"Sem responsável"} · {t.due_date||"Sem prazo"} · {t.status}</p><select aria-label={`Status de ${t.title}`} value={t.status} onChange={e=>void change(t,e.target.value)}><option value="pendente">Pendente</option><option value="em_andamento">Em andamento</option><option value="bloqueado">Bloqueado</option><option value="concluido">Concluído</option></select></article>)}
+    </section>{message&&<p role="status">{message}</p>}
+  </div>;
 }

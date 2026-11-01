@@ -1,4 +1,5 @@
 import express from 'express';
+import { registerSecondBrainRoutes } from './second-brain.mjs';
 import bcrypt from 'bcryptjs';
 import nodemailer from 'nodemailer';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
@@ -104,6 +105,8 @@ async function membership(req, res, next) {
     next();
   } catch (error) { next(error); }
 }
+
+registerSecondBrainRoutes(app, requireUser, membership, run);
 
 const ownerOnly = (req, res, next) => req.role === 'owner' ? next() : fail(res, 403, 'Somente o responsável pelo projeto pode alterar esta configuração');
 
@@ -773,4 +776,4 @@ const [unfinishedSummaries] = await db().execute("SELECT DISTINCT project_id FRO
 for (const project of unfinishedSummaries) updateTopicSummaries(project.project_id);
 void resumeExecutiveSummaries().catch((error) => console.error('Falha ao retomar resumos executivos:', error));
 const port = Number(process.env.PORT || 10000);
-app.listen(port, '0.0.0.0', () => console.log(`Organizador disponível na porta ${port}`));
+app.listen(port, process.env.HOST || '0.0.0.0', () => console.log(`Organizador disponível na porta ${port}`));
