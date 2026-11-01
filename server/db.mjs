@@ -46,6 +46,16 @@ async function prepareDatabase() {
 }
 
 const schema = [
+  `CREATE TABLE IF NOT EXISTS second_brain_tasks (
+    id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL,
+    item_id VARCHAR(36), title VARCHAR(255) NOT NULL,
+    description TEXT NOT NULL, responsible VARCHAR(160) NOT NULL DEFAULT '',
+    due_date VARCHAR(10) NOT NULL DEFAULT '', status VARCHAR(30) NOT NULL DEFAULT 'pendente',
+    created_by VARCHAR(36) NOT NULL, created_at VARCHAR(30) NOT NULL,
+    updated_at VARCHAR(30) NOT NULL, INDEX (project_id), INDEX (item_id),
+    INDEX (due_date), INDEX (status)
+  )`,
+ 
   `CREATE TABLE IF NOT EXISTS users (
     id VARCHAR(36) PRIMARY KEY, email VARCHAR(320) NOT NULL UNIQUE,
     password_hash VARCHAR(100) NOT NULL, created_at VARCHAR(30) NOT NULL
