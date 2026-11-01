@@ -90,6 +90,32 @@ test('resumo executivo extenso incorpora todas as partes da síntese', async () 
   }
 });
 
+test('resumo executivo divide trecho quando a LLM excede o limite de resposta', async () => {
+  const previousKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const successfulPrompts = [];
+  globalThis.fetch = async (_url, options) => {
+    const prompt = JSON.parse(options.body).input[1].content[0].text;
+    const part = prompt.split('Texto da síntese detalhada desta parte:\n')[1];
+    if (part.length > 3_000) return { ok: true, json: async () => ({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output_text: '' }) };
+    successfulPrompts.push(prompt);
+    const summary = `${prompt.includes('Subestação Alfa') || prompt.includes('Alfa;') ? 'Alfa; ' : ''}${part.includes('Subestação Beta') ? 'Beta' : ''}`;
+    return { ok: true, json: async () => ({ output_text: JSON.stringify({ summary }) }) };
+  };
+  try {
+    const synthesis = `• Subestação Alfa: ${'Revisão pendente. '.repeat(120)}\n• Subestação Beta: ${'Entrega concluída. '.repeat(120)}`;
+    const result = await summarizeExecutive({ topicPath: 'Equipamentos', synthesis });
+    assert.match(result, /Alfa/);
+    assert.match(result, /Beta/);
+    assert.ok(successfulPrompts.some((prompt) => prompt.includes('Resumo executivo acumulado') && prompt.includes('Alfa;')));
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = previousKey;
+  }
+});
+
 test('classificação duvidosa aguarda confirmação humana', async () => {
   await mockAnalysis({ node_id: 'ouro-cub', confidence: 0.54, reason: 'Apenas a localidade foi citada' }, async () => {
     const result = await classifyNode({ title: 'Ourolândia', summary: 'Acompanhamento', nodes });

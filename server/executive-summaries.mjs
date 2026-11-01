@@ -3,7 +3,7 @@ import { db } from './db.mjs';
 import { summarizeExecutive } from './ai.mjs';
 
 const hasModelKey = () => Boolean(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
-const sourceHash = (summary) => createHash('sha256').update(`executive-v1\n${summary}`).digest('hex');
+const sourceHash = (summary) => createHash('sha256').update(`executive-v2\n${summary}`).digest('hex');
 const active = new Set();
 const waiting = [];
 let running = 0;
