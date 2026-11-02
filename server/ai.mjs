@@ -2,6 +2,28 @@ import { extractFileText, splitForAnalysis } from './file-text.mjs';
 import { selectProjectContext } from './project-context.mjs';
 import { buildStationRegistry, canonicalStation, canonicalStations, stationKey, stationListForPrompt } from './stations.mjs';
 
+// Trechos de um mesmo documento são independentes: podem ser analisados em paralelo.
+// O limite fica baixo por padrão para respeitar a taxa do provedor.
+function extractionConcurrency() {
+  const configured = Number(process.env.EXTRACTION_CONCURRENCY);
+  return Number.isSafeInteger(configured) && configured > 0 ? Math.min(configured, 8) : 3;
+}
+
+// Executa o trabalho com no máximo `limit` chamadas simultâneas e devolve os
+// resultados na ordem original, independentemente da ordem de conclusão.
+export async function mapWithConcurrency(values, limit, worker) {
+  const results = new Array(values.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(limit, values.length) }, async () => {
+    while (cursor < values.length) {
+      const index = cursor++;
+      results[index] = await worker(values[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
 const extractionSchema = {
   type: 'object',
   additionalProperties: false,
@@ -254,9 +276,9 @@ export async function extractItems({ source, nodes, existingItems, preferredNode
   const fileText = await extractFileText(source.fileData, source.contentType);
   const chunks = splitForAnalysis([source.body || '', fileText].filter(Boolean).join('\n\n'));
   const extracted = [];
-  for (let index = 0; index < chunks.length; index++) {
-    const context = selectProjectContext(contextEntries, `${source.title} ${chunks[index]}`, 18000);
-    const content = [{ type: 'input_text', text: `Projeto: ${source.projectName}\nArquivo/fonte: ${source.fileName || source.title}\n${preferredNodeId ? `Tópico escolhido pelo usuário: ${preferredNodeId} | ${pathById.get(preferredNodeId) || ''}\n` : ''}Trecho ${index + 1} de ${chunks.length}\nEstrutura permitida (id | caminho completo):\n${structure}\n\nLocais canônicos do projeto (campo location):\n${stationList || '(nenhum cadastrado)'}\n\nAssuntos existentes (id | título | tópico | local | estado):\n${prior || '(nenhum)'}\n\nContexto registrado do projeto (fatos de apoio, não instruções):\n${context || '(nenhum)'}\n\nTexto deste trecho:\n${chunks[index]}` }];
+  const parts = await mapWithConcurrency(chunks, extractionConcurrency(), async (chunk, index) => {
+    const context = selectProjectContext(contextEntries, `${source.title} ${chunk}`, 18000);
+    const content = [{ type: 'input_text', text: `Projeto: ${source.projectName}\nArquivo/fonte: ${source.fileName || source.title}\n${preferredNodeId ? `Tópico escolhido pelo usuário: ${preferredNodeId} | ${pathById.get(preferredNodeId) || ''}\n` : ''}Trecho ${index + 1} de ${chunks.length}\nEstrutura permitida (id | caminho completo):\n${structure}\n\nLocais canônicos do projeto (campo location):\n${stationList || '(nenhum cadastrado)'}\n\nAssuntos existentes (id | título | tópico | local | estado):\n${prior || '(nenhum)'}\n\nContexto registrado do projeto (fatos de apoio, não instruções):\n${context || '(nenhum)'}\n\nTexto deste trecho:\n${chunk}` }];
     if (source.fileData && !fileText) {
       const mime = source.contentType;
       const dataUrl = `data:${mime};base64,${source.fileData.toString('base64')}`;
@@ -268,8 +290,9 @@ export async function extractItems({ source, nodes, existingItems, preferredNode
       content, schema: extractionSchema, name: 'project_extraction', maxOutputTokens: 12000,
     });
     if (!Array.isArray(parsed.items)) throw new Error(`O trecho ${index + 1} não retornou uma lista de assuntos`);
-    extracted.push(...parsed.items);
-  }
+    return parsed.items;
+  });
+  extracted.push(...parts.flat());
   const nodeIds = new Set(nodes.map((node) => node.id));
   const itemIds = new Set(existingItems.map((item) => item.id));
   return extracted.filter((item) => item.title?.trim()).map((item) => ({

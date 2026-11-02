@@ -5,6 +5,11 @@ import { buildStationRegistry } from './stations.mjs';
 
 const hasModelKey = () => Boolean(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
 const sourceHash = (summary) => createHash('sha256').update(`executive-v3\n${summary}`).digest('hex');
+// Mesma lógica da síntese por tópico: a espera é do provedor, não do processo.
+const MAX_CONCURRENT_EXECUTIVE = (() => {
+  const configured = Number(process.env.EXECUTIVE_CONCURRENCY);
+  return Number.isSafeInteger(configured) && configured > 0 ? Math.min(configured, 6) : 2;
+})();
 const active = new Set();
 const waiting = [];
 let running = 0;
@@ -41,7 +46,7 @@ function schedule(nodeId, projectId, hash) {
 }
 
 function drain() {
-  while (running < 1 && waiting.length) {
+  while (running < MAX_CONCURRENT_EXECUTIVE && waiting.length) {
     const job = waiting.shift();
     running++;
     void generate(job.nodeId, job.projectId, job.hash)

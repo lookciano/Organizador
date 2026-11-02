@@ -689,3 +689,43 @@ test('síntese mantém Jussiape (GST) e Jussiape (TAESA) em seções separadas',
     assert.ok(sections.some((line) => line.includes('Jussiape (TAESA)')));
   });
 });
+
+test('extração de documento longo analisa os trechos em paralelo e mantém a ordem', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  const oldConcurrency = process.env.EXTRACTION_CONCURRENCY;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  process.env.EXTRACTION_CONCURRENCY = '3';
+  let running = 0;
+  let peak = 0;
+  const order = [];
+  globalThis.fetch = async (_url, options) => {
+    const prompt = JSON.parse(options.body).input[1].content[0].text;
+    const match = prompt.match(/Trecho (\d+) de (\d+)/);
+    const number = Number(match[1]);
+    running++;
+    peak = Math.max(peak, running);
+    // O primeiro trecho demora mais: a conclusão chega fora de ordem.
+    await new Promise((resolve) => setTimeout(resolve, number === 1 ? 30 : 5));
+    running--;
+    order.push(number);
+    const item = { title: `Item trecho ${number}`, summary: 'Fato registrado.', location: '', discipline: '', supplier: '', responsible: '', status: 'informativo', due_date: '', attention: false, node_confidence: 0.95, confidence: 0.9, evidence: 'Fato registrado.', node_id: 'cub', existing_item_id: '' };
+    return { ok: true, json: async () => ({ output_text: JSON.stringify({ items: [item] }) }) };
+  };
+  try {
+    const filler = 'A reunião tratou de prazos, fornecedores e pendências de comissionamento. ';
+    const body = Array.from({ length: 900 }, () => filler).join('');
+    assert.ok(body.length > 24000);
+    const result = await extractItems({ source: { projectName: 'Teste', title: 'Ata longa', body }, nodes, existingItems: [] });
+    assert.ok(result.length >= 3);
+    assert.ok(peak > 1 && peak <= 3);
+    assert.deepEqual(result.map((entry) => entry.title), Array.from({ length: result.length }, (_, index) => `Item trecho ${index + 1}`));
+    assert.ok(order[0] !== 1, 'o trecho 1 não deve ser o primeiro a concluir');
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+    if (oldConcurrency === undefined) delete process.env.EXTRACTION_CONCURRENCY;
+    else process.env.EXTRACTION_CONCURRENCY = oldConcurrency;
+  }
+});

@@ -8,7 +8,12 @@ import { buildStationRegistry } from './stations.mjs';
 const hasModelKey = () => Boolean(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
 const SUMMARY_VERSION = 8;
 const MAIN_SECTION_SUMMARY_VERSION = 10;
-const MAX_CONCURRENT_SUMMARIES = 2;
+// As chamadas de síntese são espera de rede no provedor. O limite existe para
+// respeitar a taxa contratada, não por uso de CPU; pode ser ajustado por ambiente.
+const MAX_CONCURRENT_SUMMARIES = (() => {
+  const configured = Number(process.env.SUMMARY_CONCURRENCY);
+  return Number.isSafeInteger(configured) && configured > 0 ? Math.min(configured, 8) : 4;
+})();
 const active = new Set();
 const waiting = [];
 let running = 0;
