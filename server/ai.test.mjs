@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeProjectMatrix, classifyNode, extractItems, structurePaths, summarizeExecutive, summarizeTopicHistory } from './ai.mjs';
+import { analyzeProjectMatrix, classifyNode, extractItems, incrementalCutoff, structurePaths, summarizeExecutive, summarizeTopicHistory } from './ai.mjs';
 import { splitForAnalysis } from './file-text.mjs';
+import { buildStationRegistry } from './stations.mjs';
 
 const nodes = [
   { id: 'equip', parent_id: null, title: 'Equipamentos' },
@@ -607,6 +608,265 @@ test('síntese informa os IDs à LLM e divide lotes quando a resposta excede o l
       assert.match(result.summary, new RegExp(`Síntese de ${item.id}`));
       assert.ok(requests.some((request) => request.prompt.includes(`ID do assunto: ${item.id} | Assunto: ${item.title}`)));
     }
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
+
+test('extração devolve o local já canonizado e envia a lista fechada ao modelo', async () => {
+  await mockAnalysis({ items: [{ existing_item_id: '', node_id: 'cub', node_confidence: 0.95, title: 'Reator de barra', summary: 'Entrega prevista.', location: 'Ceará-Mirim (Axia)', discipline: 'Equipamentos', supplier: '', responsible: '', status: 'em_andamento', due_date: '', attention: false, confidence: 0.9, evidence: 'Reator de barra para Ceará-Mirim (Axia).' }] }, async (request) => {
+    const result = await extractItems({ source: { projectName: 'Teste', title: 'Ata', body: 'Reator de barra para Ceará-Mirim (Axia).' }, nodes, existingItems: [] });
+    assert.equal(result[0].location, 'Ceará Mirim II');
+    const prompt = request().input[1].content[0].text;
+    assert.match(prompt, /Locais canônicos do projeto/);
+    assert.match(prompt, /Ceará Mirim II \(também citada como: Ceará-Mirim/);
+    assert.match(request().input[0].content, /use SOMENTE um nome da lista de locais canônicos/);
+  });
+});
+
+test('extração mantém a menção original quando não há subestação canônica correspondente', async () => {
+  await mockAnalysis({ items: [{ existing_item_id: '', node_id: 'cub', node_confidence: 0.95, title: 'Painéis QDCA', summary: 'Entrega prevista.', location: 'Painéis QDCA e QDCC', discipline: '', supplier: '', responsible: '', status: 'informativo', due_date: '', attention: false, confidence: 0.9, evidence: 'Painéis QDCA e QDCC.' }] }, async () => {
+    const result = await extractItems({ source: { projectName: 'Teste', title: 'Ata', body: 'Painéis QDCA e QDCC.' }, nodes, existingItems: [] });
+    assert.equal(result[0].location, 'Painéis QDCA e QDCC');
+  });
+});
+
+test('síntese da seção principal agrupa variantes da mesma subestação em uma única seção', async () => {
+  const registry = buildStationRegistry([]);
+  await mockAnalysis({ bullets: [
+    { item_id: 'a', text: '', locations: [{ name: 'Ourolândia', text: 'Pendência de ensaio.' }] },
+    { item_id: 'b', text: '', locations: [{ name: 'Ourolândia II', text: 'Laudo recebido.' }] },
+    { item_id: 'c', text: '', locations: [{ name: 'SE Ourolândia II, lote GS3', text: 'Reator em transporte.' }] },
+  ], important_change: '', changed_item_id: '', change_before: '', change_after: '' }, async () => {
+    const result = await summarizeTopicHistory({
+      projectName: 'Teste', topicPath: 'Fornecimento', isMainSection: true, stationRegistry: registry,
+      items: [
+        { id: 'a', title: 'Reator', updated_at: '2026-10-24T10:00:00Z', status: 'pendente', summary: 'Ensaio pendente.', location: 'Ourolândia', responsible: '', supplier: '', due_date: '', attention: 0 },
+        { id: 'b', title: 'Laudo', updated_at: '2026-10-24T10:00:00Z', status: 'concluido', summary: 'Laudo recebido.', location: 'Ourolândia II', responsible: '', supplier: '', due_date: '', attention: 0 },
+        { id: 'c', title: 'Transporte', updated_at: '2026-10-24T10:00:00Z', status: 'em_andamento', summary: 'Em transporte.', location: 'Ourolândia (Argo)', responsible: '', supplier: '', due_date: '', attention: 0 },
+      ],
+      updates: [],
+    });
+    const sections = result.summary.split('\n').filter((line) => line.startsWith('• Subestação'));
+    assert.equal(sections.length, 1, `seções encontradas: ${sections.join(' | ')}`);
+    assert.match(sections[0], /Subestação Ourolândia II/);
+    assert.doesNotMatch(result.summary, /Subestação Ourolândia —/);
+  });
+});
+
+test('local sem correspondência canônica não cria seção de subestação', async () => {
+  const registry = buildStationRegistry([]);
+  await mockAnalysis({ bullets: [{ item_id: 'a', text: '', locations: [{ name: 'Painéis QDCA e QDCC', text: 'Em fabricação.' }] }], important_change: '', changed_item_id: '', change_before: '', change_after: '' }, async () => {
+    const result = await summarizeTopicHistory({
+      projectName: 'Teste', topicPath: 'Fornecimento', isMainSection: true, stationRegistry: registry,
+      items: [{ id: 'a', title: 'Painéis', updated_at: '2026-10-24T10:00:00Z', status: 'em_andamento', summary: 'Em fabricação.', location: 'Painéis QDCA e QDCC', responsible: '', supplier: '', due_date: '', attention: 0 }],
+      updates: [],
+    });
+    assert.doesNotMatch(result.summary, /• Subestação/);
+    assert.match(result.summary, /Informações gerais/);
+  });
+});
+
+test('síntese mantém Jussiape (GST) e Jussiape (TAESA) em seções separadas', async () => {
+  const registry = buildStationRegistry([]);
+  await mockAnalysis({ bullets: [
+    { item_id: 'g', text: '', locations: [{ name: 'Jussiape (GST)', text: 'Implantação do GST em andamento.' }] },
+    { item_id: 't', text: '', locations: [{ name: 'Jussiape (TAESA)', text: 'Terminais da TAESA liberados.' }] },
+  ], important_change: '', changed_item_id: '', change_before: '', change_after: '' }, async () => {
+    const result = await summarizeTopicHistory({
+      projectName: 'Teste', topicPath: 'Estudos, SPCS e Proteção', isMainSection: true, stationRegistry: registry,
+      items: [
+        { id: 'g', title: 'Proteção GST', updated_at: '2026-10-24T10:00:00Z', status: 'em_andamento', summary: 'Em andamento.', location: 'Jussiape (GST)', responsible: '', supplier: '', due_date: '', attention: 0 },
+        { id: 't', title: 'Proteção TAESA', updated_at: '2026-10-24T10:00:00Z', status: 'concluido', summary: 'Liberado.', location: 'Jussiape (TAESA)', responsible: '', supplier: '', due_date: '', attention: 0 },
+      ],
+      updates: [],
+    });
+    const sections = result.summary.split('\n').filter((line) => line.startsWith('• Subestação'));
+    assert.equal(sections.length, 2, `seções: ${sections.join(' | ')}`);
+    assert.ok(sections.some((line) => line.includes('Jussiape (GST)')));
+    assert.ok(sections.some((line) => line.includes('Jussiape (TAESA)')));
+  });
+});
+
+test('extração de documento longo analisa os trechos em paralelo e mantém a ordem', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  const oldConcurrency = process.env.EXTRACTION_CONCURRENCY;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  process.env.EXTRACTION_CONCURRENCY = '3';
+  let running = 0;
+  let peak = 0;
+  const order = [];
+  globalThis.fetch = async (_url, options) => {
+    const prompt = JSON.parse(options.body).input[1].content[0].text;
+    const match = prompt.match(/Trecho (\d+) de (\d+)/);
+    const number = Number(match[1]);
+    running++;
+    peak = Math.max(peak, running);
+    // O primeiro trecho demora mais: a conclusão chega fora de ordem.
+    await new Promise((resolve) => setTimeout(resolve, number === 1 ? 30 : 5));
+    running--;
+    order.push(number);
+    const item = { title: `Item trecho ${number}`, summary: 'Fato registrado.', location: '', discipline: '', supplier: '', responsible: '', status: 'informativo', due_date: '', attention: false, node_confidence: 0.95, confidence: 0.9, evidence: 'Fato registrado.', node_id: 'cub', existing_item_id: '' };
+    return { ok: true, json: async () => ({ output_text: JSON.stringify({ items: [item] }) }) };
+  };
+  try {
+    const filler = 'A reunião tratou de prazos, fornecedores e pendências de comissionamento. ';
+    const body = Array.from({ length: 900 }, () => filler).join('');
+    assert.ok(body.length > 24000);
+    const result = await extractItems({ source: { projectName: 'Teste', title: 'Ata longa', body }, nodes, existingItems: [] });
+    assert.ok(result.length >= 3);
+    assert.ok(peak > 1 && peak <= 3);
+    assert.deepEqual(result.map((entry) => entry.title), Array.from({ length: result.length }, (_, index) => `Item trecho ${index + 1}`));
+    assert.ok(order[0] !== 1, 'o trecho 1 não deve ser o primeiro a concluir');
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+    if (oldConcurrency === undefined) delete process.env.EXTRACTION_CONCURRENCY;
+    else process.env.EXTRACTION_CONCURRENCY = oldConcurrency;
+  }
+});
+
+
+function commonPrefix(values) {
+  if (!values.length) return '';
+  let end = values[0].length;
+  for (const value of values.slice(1)) {
+    let index = 0;
+    while (index < end && index < value.length && value[index] === values[0][index]) index++;
+    end = index;
+  }
+  return values[0].slice(0, end);
+}
+
+test('síntese mantém o bloco invariante no início, para o cache de prefixo do provedor', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const prompts = [];
+  const contexto = 'A Alfa fabrica os cubículos de Ourolândia e responde pela comissão de ensaios. '.repeat(40);
+  globalThis.fetch = async (_url, options) => {
+    const prompt = JSON.parse(options.body).input[1].content[0].text;
+    prompts.push(prompt);
+    const ids = [...new Set([...prompt.matchAll(/ID do assunto: ([^\s|]+)/g)].map((match) => match[1]))];
+    return { ok: true, json: async () => ({ output_text: JSON.stringify({ bullets: ids.map((id) => ({ item_id: id, text: `Situação de ${id}.`, locations: [] })), important_change: '', changed_item_id: '', change_before: '', change_after: '' }) }) };
+  };
+  try {
+    const items = ['a', 'b', 'c'].map((id) => ({ id, title: `Assunto ${id}`, updated_at: '2026-10-24T10:00:00Z', status: 'pendente', summary: `Estado ${id}. ${'detalhe '.repeat(400)}`, responsible: '', supplier: '', due_date: '', attention: 0 }));
+    await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos', items, updates: [], projectContext: contexto });
+    assert.ok(prompts.length >= 2);
+    const prefixo = commonPrefix(prompts);
+    assert.ok(prefixo.includes('Tópico: Equipamentos'));
+    assert.ok(prefixo.includes('Alfa fabrica os cubículos de Ourolândia'), 'o contexto entra no prefixo reaproveitável');
+    assert.ok(!prefixo.includes('Parte 2 de'), 'o que muda por parte fica fora do prefixo');
+    assert.ok(prefixo.length > contexto.length, `prefixo estável insuficiente: ${prefixo.length} caracteres`);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
+
+test('extração mantém estrutura e assuntos existentes no início, antes do trecho variável', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const prompts = [];
+  globalThis.fetch = async (_url, options) => {
+    const prompt = JSON.parse(options.body).input[1].content[0].text;
+    prompts.push(prompt);
+    const numero = Number(prompt.match(/Trecho (\d+) de/)?.[1] || 1);
+    return { ok: true, json: async () => ({ output_text: JSON.stringify({ items: [{ title: `Fato ${numero}`, summary: 'Resumo.', location: '', discipline: '', supplier: '', responsible: '', status: 'informativo', due_date: '', attention: false, node_confidence: 0.9, confidence: 0.9, evidence: 'Evidência.', node_id: 'equip', existing_item_id: '' }] }) }) };
+  };
+  try {
+    const body = Array.from({ length: 700 }, () => 'A reunião tratou de prazos e pendências de comissionamento. ').join('');
+    const result = await extractItems({
+      source: { projectName: 'Teste', title: 'Ata', body }, nodes,
+      existingItems: [{ id: 'item-1', title: 'Cubículo de Ourolândia', node_id: 'ouro-cub', location: 'Ourolândia', status: 'pendente' }],
+    });
+    assert.ok(result.length >= 2);
+    const prefixo = commonPrefix(prompts);
+    assert.ok(prefixo.includes('Estrutura permitida'), 'a estrutura entra no prefixo reaproveitável');
+    assert.ok(prefixo.includes('Assuntos existentes'), 'a lista de assuntos entra no prefixo reaproveitável');
+    assert.ok(!prefixo.includes('Trecho 2 de'), 'o número do trecho fica fora do prefixo');
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
+
+test('síntese incremental reenvia só o delta posterior à síntese anterior', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const prompts = [];
+  globalThis.fetch = async (_url, options) => {
+    const prompt = JSON.parse(options.body).input[1].content[0].text;
+    prompts.push(prompt);
+    return { ok: true, json: async () => ({ output_text: JSON.stringify({ bullets: [{ id: 'x', existingId: 'a', title: 'Entrega', situation: 'Em andamento', suppliers: '', deadlines: '', notes: 'Pendência de setembro segue válida; laudo novo recebido em 21/10.' }], important_change: '', changed_item_id: '', change_before: '', change_after: '' }) }) };
+  };
+  const item = { id: 'a', title: 'Cubículo', node_path: 'Equipamentos > Cubículos', updated_at: '2026-10-21T10:00:00Z', status: 'em_andamento', summary: 'Aguardando laudo.', location: 'Ourolândia', responsible: '', supplier: '', due_date: '', attention: 0 };
+  const updates = [
+    { id: '1', item_id: 'a', created_at: '2026-09-10T10:00:00Z', summary: 'Registro antigo que não deve ser reenviado.', evidence: '', new_status: 'pendente', source_title: 'Ata setembro' },
+    { id: '2', item_id: 'a', created_at: '2026-10-21T10:00:00Z', summary: 'Laudo novo recebido.', evidence: '', new_status: 'em_andamento', source_title: 'Ata outubro' },
+  ];
+  const priorSummaries = [{ generated_at: '2026-10-01T10:00:00Z', summary: '• Cubículo: pendência de setembro em aberto.' }];
+  try {
+    await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos > Cubículos', items: [item], updates, priorSummaries, incrementalSince: '2026-10-01T10:00:00Z' });
+    assert.doesNotMatch(prompts[0], /Registro antigo que não deve ser reenviado/, 'o histórico anterior não volta por inteiro');
+    assert.match(prompts[0], /Laudo novo recebido/, 'o delta posterior ao corte é enviado');
+    assert.match(prompts[0], /RECORTE INCREMENTAL/);
+    assert.match(prompts[0], /SÍNTESE ANTERIOR/);
+
+    prompts.length = 0;
+    await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos > Cubículos', items: [item], updates });
+    assert.match(prompts[0], /Registro antigo que não deve ser reenviado/, 'sem corte, o histórico completo continua sendo lido');
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
+
+test('o corte incremental só é usado quando a maior parte do histórico já está consolidada', () => {
+  const prior = [{ generated_at: '2026-10-01T10:00:00Z', summary: '• Síntese anterior.' }];
+  const many = Array.from({ length: 10 }, (_, i) => ({ created_at: `2026-09-${String(10 + i).padStart(2, '0')}T10:00:00Z` }));
+  const oneNew = [...many, { created_at: '2026-10-05T10:00:00Z' }];
+  assert.equal(incrementalCutoff(prior, oneNew), '2026-10-01T10:00:00Z');
+  const mostlyNew = [...many.slice(0, 2), ...Array.from({ length: 8 }, (_, i) => ({ created_at: `2026-10-${String(5 + i).padStart(2, '0')}T10:00:00Z` }))];
+  assert.equal(incrementalCutoff(prior, mostlyNew), '');
+  assert.equal(incrementalCutoff([], oneNew), '');
+  assert.equal(incrementalCutoff(prior, []), '');
+  assert.equal(incrementalCutoff([{ generated_at: '2026-09-01T10:00:00Z', summary: '' }], oneNew), '');
+});
+
+test('no recorte incremental a síntese anterior vai inteira, inclusive o agrupamento por subestação', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const prompts = [];
+  globalThis.fetch = async (_url, options) => {
+    const prompt = JSON.parse(options.body).input[1].content[0].text;
+    prompts.push(prompt);
+    return { ok: true, json: async () => ({ output_text: JSON.stringify({ bullets: [{ item_id: 'a', text: 'Pendência de setembro segue válida; laudo novo em 21/10.', locations: [{ name: 'Ourolândia', text: 'Pendência de setembro segue válida; laudo novo em 21/10.' }] }], important_change: '', changed_item_id: '', change_before: '', change_after: '' }) }) };
+  };
+  const item = { id: 'a', title: 'Cubículo', node_path: 'Fornecimento', updated_at: '2026-10-21T10:00:00Z', status: 'em_andamento', summary: 'Aguardando laudo.', location: 'Ourolândia', responsible: '', supplier: '', due_date: '', attention: 0 };
+  const updates = [
+    { id: '1', item_id: 'a', created_at: '2026-09-10T10:00:00Z', summary: 'Registro antigo não reenviado.', evidence: '', new_status: 'pendente', source_title: 'Ata setembro' },
+    { id: '2', item_id: 'a', created_at: '2026-10-21T10:00:00Z', summary: 'Laudo novo recebido.', evidence: '', new_status: 'em_andamento', source_title: 'Ata outubro' },
+  ];
+  const priorSummaries = [{ generated_at: '2026-10-01T10:00:00Z', summary: '• Subestação Ourolândia — última informação em 01/10/2026\n  ◦ Cubículo: pendência de setembro em aberto (Situação: pendente)' }];
+  try {
+    await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Fornecimento', items: [item], updates, priorSummaries, isMainSection: true, incrementalSince: '2026-10-01T10:00:00Z' });
+    assert.match(prompts[0], /SÍNTESE ANTERIOR/);
+    assert.match(prompts[0], /Subestação Ourolândia/, 'o agrupamento da síntese anterior é preservado no recorte');
+    assert.match(prompts[0], /pendência de setembro em aberto/, 'o fato anterior continua disponível ao modelo');
+    assert.doesNotMatch(prompts[0], /Registro antigo não reenviado/, 'o histórico anterior não é relido');
+    assert.match(prompts[0], /Laudo novo recebido/, 'o delta é enviado');
   } finally {
     globalThis.fetch = oldFetch;
     if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;

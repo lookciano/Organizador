@@ -1,9 +1,15 @@
 import { createHash } from 'node:crypto';
 import { db } from './db.mjs';
 import { summarizeExecutive } from './ai.mjs';
+import { buildStationRegistry } from './stations.mjs';
 
 const hasModelKey = () => Boolean(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
 const sourceHash = (summary) => createHash('sha256').update(`executive-v3\n${summary}`).digest('hex');
+// Mesma lógica da síntese por tópico: a espera é do provedor, não do processo.
+const MAX_CONCURRENT_EXECUTIVE = (() => {
+  const configured = Number(process.env.EXECUTIVE_CONCURRENCY);
+  return Number.isSafeInteger(configured) && configured > 0 ? Math.min(configured, 6) : 2;
+})();
 const active = new Set();
 const waiting = [];
 let running = 0;
@@ -16,7 +22,8 @@ async function generate(nodeId, projectId, hash) {
     const [sources] = await db().execute(`SELECT n.title,s.summary FROM topic_summaries s JOIN structure_nodes n ON n.id=s.node_id
       WHERE s.node_id=? AND s.project_id=? AND s.analysis_status='completed' AND n.parent_id IS NULL AND n.archived=0`, [nodeId, projectId]);
     if (!sources.length || sourceHash(sources[0].summary) !== hash) return;
-    const summary = await summarizeExecutive({ topicPath: sources[0].title, synthesis: sources[0].summary,
+    const [nodes] = await db().execute('SELECT id,parent_id,title FROM structure_nodes WHERE project_id=? AND archived=0', [projectId]);
+    const summary = await summarizeExecutive({ topicPath: sources[0].title, synthesis: sources[0].summary, stationRegistry: buildStationRegistry(nodes),
       onProgress: ({ completed, total }) => console.info('Progresso do resumo executivo:', nodeId, { subestacoesAnalisadas: completed, total }),
     });
     const [saved] = await db().execute(`UPDATE topic_executive_summaries SET summary=?,analysis_status='completed',analysis_error=NULL,generated_at=?
@@ -39,7 +46,7 @@ function schedule(nodeId, projectId, hash) {
 }
 
 function drain() {
-  while (running < 1 && waiting.length) {
+  while (running < MAX_CONCURRENT_EXECUTIVE && waiting.length) {
     const job = waiting.shift();
     running++;
     void generate(job.nodeId, job.projectId, job.hash)

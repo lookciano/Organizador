@@ -1,13 +1,19 @@
 import { createHash } from 'node:crypto';
 import { db } from './db.mjs';
-import { structurePaths, summarizeTopicHistory } from './ai.mjs';
+import { structurePaths, summarizeTopicHistory, incrementalCutoff } from './ai.mjs';
 import { loadProjectContext, selectProjectContext } from './project-context.mjs';
 import { prepareExecutiveSummaries } from './executive-summaries.mjs';
+import { buildStationRegistry } from './stations.mjs';
 
 const hasModelKey = () => Boolean(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
 const SUMMARY_VERSION = 8;
 const MAIN_SECTION_SUMMARY_VERSION = 10;
-const MAX_CONCURRENT_SUMMARIES = 2;
+// As chamadas de síntese são espera de rede no provedor. O limite existe para
+// respeitar a taxa contratada, não por uso de CPU; pode ser ajustado por ambiente.
+const MAX_CONCURRENT_SUMMARIES = (() => {
+  const configured = Number(process.env.SUMMARY_CONCURRENCY);
+  return Number.isSafeInteger(configured) && configured > 0 ? Math.min(configured, 8) : 4;
+})();
 const active = new Set();
 const waiting = [];
 let running = 0;
@@ -84,9 +90,16 @@ async function generate(nodeId, projectId, revision) {
       catch { console.warn('Progresso anterior da síntese inválido; reiniciando:', nodeId); }
     }
     const projectContext = selectProjectContext(contextEntries, contextQuery(path, items));
+    // Registro canônico: "Ourolândia", "Ourolândia II" e "SE Ourolândia lote GS3"
+    // passam a ser uma única subestação na síntese.
+    const stationRegistry = buildStationRegistry(nodes);
+    // Síntese incremental: quando já existe uma síntese anterior, o histórico até
+    // aquela data já está condensado nela. Reenviamos só o que veio depois, mais o
+    // estado atual. Sem síntese anterior (primeira geração), lê o histórico inteiro.
+    const incrementalSince = incrementalCutoff(priorSummaries, updates);
     const model = process.env.OPENROUTER_API_KEY ? process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4.1-flash-1017' : process.env.OPENAI_MODEL || 'gpt-4.1-mini';
-    console.info('Iniciando síntese:', nodeId, { modelo: model, assuntos: items.length, registros: updates.length, sintesesAnteriores: priorSummaries.length, retomandoDe: resumeProgress?.completed_count || 0 });
-    const result = await summarizeTopicHistory({ projectName: projects[0].name, topicPath: path, items, updates, priorSummaries, isMainSection: !node.parent_id, projectContext, resumeProgress,
+    console.info('Iniciando síntese:', nodeId, { modelo: model, assuntos: items.length, registros: updates.length, sintesesAnteriores: priorSummaries.length, retomandoDe: resumeProgress?.completed_count || 0, recorteIncremental: incrementalSince || 'completo', subestacoes: stationRegistry.length });
+    const result = await summarizeTopicHistory({ projectName: projects[0].name, topicPath: path, items, updates, priorSummaries, isMainSection: !node.parent_id, projectContext, resumeProgress, incrementalSince, stationRegistry,
       onProgress: async ({ completed, total, result: partial }) => {
         await db().execute(`INSERT INTO topic_summary_progress (node_id,project_id,revision,completed_count,result_json,updated_at)
           SELECT node_id,project_id,revision,?,?,? FROM topic_summaries
