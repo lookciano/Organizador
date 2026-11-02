@@ -107,3 +107,16 @@ test('menção com várias subestações é desdobrada', () => {
   assert.deepEqual(canonicalStations('Painéis QDCA e QDCC', registry), []);
   assert.deepEqual(canonicalStations('', registry), []);
 });
+
+test('SJP é o apelido usado para São João do Paraíso', () => {
+  const registry = buildStationRegistry([]);
+  for (const input of ['SJP', 'SE SJP', 'SJP 500 kV', 'sjp', 'São João do Paraíso', 'Sao Joao do Paraiso', 'São João Paraíso']) {
+    assert.equal(canonicalStation(input, registry), 'São João do Paraíso', `entrada: ${input}`);
+  }
+});
+
+test('menção entre parênteses também é desdobrada', () => {
+  const registry = buildStationRegistry([]);
+  assert.deepEqual(canonicalStations('GMG — Geraforte (Jussiape e SJP)', registry), ['Jussiape', 'São João do Paraíso']);
+  assert.deepEqual(canonicalStations('Jussiape e SJP', registry), ['Jussiape', 'São João do Paraíso']);
+});

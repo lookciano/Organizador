@@ -245,11 +245,20 @@ export function canonicalStations(value, registry = []) {
   if (!text) return [];
   const single = canonicalStation(text, registry);
   if (single) return [single];
-  const parts = text.split(/\s*[,;/]\s*|\s+e\s+/i).map((part) => part.trim()).filter(Boolean);
-  if (parts.length < 2) return [];
+
+  // Menções podem vir em lista ("Jussiape, Ibicoara e Igaporã") ou entre parênteses
+  // ("GMG — Geraforte (Jussiape e SJP)"): as duas formas são desdobradas.
+  const parts = [];
+  for (const match of text.matchAll(/\(([^)]*)\)/g)) {
+    parts.push(...match[1].split(/\s*[,;/]\s*|\s+e\s+/i));
+  }
+  parts.push(...text.replace(/\([^)]*\)/g, ' ').split(/\s*[,;/]\s*|\s+e\s+/i));
+
   const found = [];
   for (const part of parts) {
-    const canonical = canonicalStation(part, registry);
+    const cleaned = part.trim();
+    if (!cleaned) continue;
+    const canonical = canonicalStation(cleaned, registry);
     if (canonical && !found.includes(canonical)) found.push(canonical);
   }
   return found;
