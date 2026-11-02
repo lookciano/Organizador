@@ -193,3 +193,16 @@
 .summary-title{display:inline-flex;align-items:center;gap:3px}
 .copy-text-control{position:relative}
 .copy-text-notice{position:absolute;left:0;top:100%;z-index:1;min-width:48px;font-weight:500;letter-spacing:normal}
+
+.new-project-button {margin-top:10px;color:var(--sidebar-text,#d9eee8);background:transparent;border:1px solid #ffffff30;border-radius:8px;padding:9px 12px;text-align:left;cursor:pointer;}
+.task-heading,.chatask-task header,.task-actions {display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.chatask-tasks form {display:grid;gap:12px;margin:20px 0;}
+.chatask-connect {max-width:550px;}
+.room-settings {padding:14px 0;border-block:1px solid #dbe6e3;}
+.room-settings summary {cursor:pointer;}
+.chatask-task {padding:22px 0;border-top:1px solid #dbe6e3;}
+.task-description {white-space:pre-wrap;overflow-wrap:anywhere;}
+.chatask-tasks textarea {width:100%;}
+.chatask-tasks .task-actions {justify-content:flex-start;}
+.connection-info {font-size:14px;color:#52706a;}
+.chatask-tasks .text-link {border:0;background:transparent;color:#176d67;padding:0 4px;cursor:pointer;text-decoration:underline;font:inherit;}

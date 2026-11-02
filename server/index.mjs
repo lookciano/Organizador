@@ -1,4 +1,5 @@
 import express from 'express';
+import { registerChataskRoutes } from './chatask.mjs';
 import { registerSecondBrainRoutes } from './second-brain.mjs';
 import bcrypt from 'bcryptjs';
 import nodemailer from 'nodemailer';
@@ -79,7 +80,10 @@ app.post('/api/auth/login', run(async (req, res) => {
 
 app.post('/api/auth/logout', run(async (req, res) => {
   const token = readCookie(req, 'organizador_session');
-  if (token) await db().execute('DELETE FROM sessions WHERE token_hash=?', [hash(token)]);
+  if (token) {
+    await db().execute('DELETE FROM chatask_connections WHERE session_hash=?', [hash(token)]);
+    await db().execute('DELETE FROM sessions WHERE token_hash=?', [hash(token)]);
+  }
   res.clearCookie('organizador_session', { path: '/' });
   res.json({ ok: true });
 }));
@@ -109,6 +113,8 @@ async function membership(req, res, next) {
 registerSecondBrainRoutes(app, requireUser, membership, run);
 
 const ownerOnly = (req, res, next) => req.role === 'owner' ? next() : fail(res, 403, 'Somente o responsável pelo projeto pode alterar esta configuração');
+
+registerChataskRoutes(app, requireUser, membership, ownerOnly, readCookie);
 
 app.get('/api/auth/me', requireUser, (req, res) => res.json({ user: req.user }));
 
@@ -175,7 +181,11 @@ app.post('/api/projects/:projectId/topics/:nodeId/executive/retry', requireUser,
 app.post('/api/projects', requireUser, run(async (req, res) => {
   const name = text(req.body.name, 200);
   if (name.length < 3) return fail(res, 400, 'Dê um nome ao projeto');
-  const id = await createProject(name, text(req.body.description, 2000), req.user.id, req.body.withTemplate !== false);
+  const source = req.body.structureProjectId;
+  if(source !== undefined && (typeof source !== 'string' || source.length>36 || !source)) return fail(res,400,'Selecione um projeto de origem válido');
+  let id;
+  try {id = await createProject(name, text(req.body.description, 2000), req.user.id, req.body.withTemplate !== false, source || null);}
+  catch(error) {if([403,409].includes(error.status))return fail(res,error.status,error.message);throw error;}
   res.status(201).json({ id });
 }));
 

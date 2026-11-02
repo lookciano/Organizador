@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { TasksView } from "./ChataskTasks";
+export { TasksView } from "./ChataskTasks";
 
 type User = { id: string; email: string };
 type Project = { id: string; name: string; description: string; role: string; created_at: string };
@@ -77,6 +79,7 @@ export default function App() {
   const [composerFocus, setComposerFocus] = useState(0);
   const [reviewSourceId, setReviewSourceId] = useState("");
   const [reviewDirty, setReviewDirty] = useState(false);
+  const [showCreateProject, setShowCreateProject] = useState(false);
   const [showManual, setShowManual] = useState(false);
   const [selectedItem, setSelectedItem] = useState<Item | null>(null);
   const [updates, setUpdates] = useState<Update[]>([]);
@@ -129,7 +132,7 @@ export default function App() {
     setReviewDirty(false);
     return true;
   };
-  const chooseProject = (id: string) => { if (!leaveReview()) return; setProjectId(id); setReviewSourceId(""); localStorage.setItem("organizador_project", id); setView("overview"); void refresh(id); };
+  const chooseProject = (id: string) => { if (!leaveReview()) return; setShowCreateProject(false); setSelectedItem(null); setShowManual(false); setProjectId(id); setReviewSourceId(""); localStorage.setItem("organizador_project", id); setView("overview"); void refresh(id); };
   const after = async (message = "Alterações salvas") => { await refresh(); setNotice(message); setTimeout(() => setNotice(""), 5000); };
   const openItem = async (item: Item) => {
     setSelectedItem(item);
@@ -149,25 +152,26 @@ export default function App() {
 
   return <div className="shell">
     <aside className="sidebar">
-      <div className="brand"><div className="brand-mark">GS</div><div><strong>Organizador</strong><small>GRANDE SERTÃO</small></div></div>
+      <div className="brand"><div className="brand-mark">{project?.name.split(/\s+/).slice(0,2).map(word=>word[0]).join("").toUpperCase() || "O"}</div><div><strong>Organizador</strong><small>{project?.name || "PROJETOS"}</small></div></div>
       <div className="sidebar-section-label">ESPAÇO DE TRABALHO</div>
       <select className="project-select" value={projectId} onChange={(event) => chooseProject(event.target.value)} aria-label="Selecionar projeto">
         <option value="">Selecionar projeto</option>
         {state.projects.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
       </select>
+      <button className="new-project-button" onClick={()=>{if(leaveReview()){setShowCreateProject(true);setError("");}}}>＋ Novo projeto</button>
       <nav className="nav" aria-label="Navegação principal">
-        {views.map((entry) => <button key={entry.id} className={view === entry.id ? "nav-link active" : "nav-link"} onClick={() => { if (entry.id !== view && leaveReview()) setView(entry.id); }} disabled={!project}><span className="nav-icon">{entry.icon}</span>{entry.label}{entry.id === "items" && !!counts.open && <em>{counts.open}</em>}</button>)}
+        {views.map((entry) => <button key={entry.id} className={!showCreateProject && view === entry.id ? "nav-link active" : "nav-link"} onClick={() => { if ((entry.id !== view || showCreateProject) && leaveReview()) {setShowCreateProject(false);setView(entry.id);} }} disabled={!project}><span className="nav-icon">{entry.icon}</span>{entry.label}{entry.id === "items" && !!counts.open && <em>{counts.open}</em>}</button>)}
       </nav>
       <div className="sidebar-bottom"><div className="side-help"><strong>Uma fonte. Várias perspectivas.</strong><p>Informações registradas ficam ligadas aos assuntos e podem ser verificadas a qualquer momento.</p></div><div className="account"><span className="avatar">{state.user.email.charAt(0).toUpperCase()}</span><div><strong>{state.user.email.split("@")[0]}</strong><small>{state.user.email}</small></div><button title="Sair" onClick={async () => { if (!leaveReview()) return; await post("/api/auth/logout", {}); setState(null); }}>↗</button></div></div>
     </aside>
 
     <main className="main">
-      <header className="topbar"><div className="breadcrumb">Projetos <span>/</span> {project?.name || "Novo projeto"}</div><div className="top-actions"><span className="privacy-pill">● Acesso restrito</span>{project && view !== "sources" && <button className="button primary" onClick={() => { if (!leaveReview()) return; setView("sources"); setComposerFocus((value) => value + 1); }}>＋ Escrever atualização</button>}</div></header>
+      <header className="topbar"><div className="breadcrumb">Projetos <span>/</span> {project?.name || "Novo projeto"}</div><div className="top-actions"><span className="privacy-pill">● Acesso restrito</span>{project && !showCreateProject && view !== "sources" && <button className="button primary" onClick={() => { if (!leaveReview()) return; setView("sources"); setComposerFocus((value) => value + 1); }}>＋ Escrever atualização</button>}</div></header>
       {error && <div className="alert error" role="alert">{error}<button onClick={() => setError("")}>×</button></div>}
       {notice && <div className="alert success" role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
-      {!project ? <CreateProject onCreated={(id) => chooseProject(id)} setBusy={setBusy} busy={busy} setError={setError} /> : <div className="content">
+      {!project || showCreateProject ? <CreateProject key={showCreateProject?"new":"first"} projects={state.projects} currentProjectId={projectId} onCancel={project?()=>setShowCreateProject(false):undefined} onCreated={(id) => chooseProject(id)} setBusy={setBusy} busy={busy} setError={setError} /> : <div className="content">
         {view === "brain" && project.id === projectId && <SecondBrainView key={projectId} projectId={projectId} onOpenSource={(source) => { const item = items.find(i => i.id === source.item_id); if(item) void openItem(item); else setView(source.kind === "contexto" ? "context" : source.kind === "fonte" ? "sources" : "items"); }} />}
-        {view === "tasks" && project.id === projectId && <TasksView key={projectId} projectId={projectId} items={items} />}
+        {view === "tasks" && project.id === projectId && <TasksView key={projectId} projectId={projectId} owner={project.role === "owner"} />}
         {view === "overview" && <LivingReportView project={project} items={items} nodes={nodes} topicSummaries={state.topicSummaries || []} executiveSummaries={state.executiveSummaries || []} syncedAt={syncedAt} onRefresh={() => refresh(projectId)} onOpen={openItem} onCompose={() => { setView("sources"); setComposerFocus((value) => value + 1); }} />}
         {view === "items" && <ItemsView items={items} nodes={nodes} onOpen={openItem} onManual={() => setShowManual(true)} />}
         {view === "organize" && <OrganizeView projectId={projectId} items={items} nodes={nodes} sources={sources} sourceId={reviewSourceId} onSourceChange={setReviewSourceId} onDirtyChange={setReviewDirty} onRefresh={after} onOpen={openItem} setError={setError} />}
@@ -194,9 +198,10 @@ function InviteScreen({ token }: { token: string }) {
   return <div className="invite-page"><div className="brand-mark big">GS</div><div className="auth-card"><div className="eyebrow">CONVITE PARA COLABORAR</div><h1>{details ? `Participe de ${details.projectName}` : "Abrindo convite"}</h1>{error && <div className="form-error">{error}</div>}{details && <form onSubmit={async (event) => { event.preventDefault(); setBusy(true); try { const result = await post<{ projectId: string }>(`/api/invitations/${token}/accept`, { password }); localStorage.setItem("organizador_project", result.projectId); window.location.href = "/"; } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao aceitar convite"); } finally { setBusy(false); } }}><p>Convite para <strong>{details.email}</strong>. Se você já tem conta, informe sua senha; caso contrário, crie uma senha de pelo menos 12 caracteres.</p><label>Senha<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Sua senha" required /></label><button className="button primary wide" disabled={busy}>{busy ? "Confirmando..." : "Aceitar convite →"}</button></form>}</div></div>;
 }
 
-function CreateProject({ onCreated, busy, setBusy, setError }: { onCreated: (id: string) => void; busy: boolean; setBusy: (value: boolean) => void; setError: (value: string) => void }) {
-  const [name, setName] = useState("Grande Sertão"); const [description, setDescription] = useState(""); const [withTemplate, setWithTemplate] = useState(true);
-  return <div className="content"><div className="empty-project"><div className="eyebrow">COMECE PELO CONTEXTO</div><h1>Crie seu primeiro projeto</h1><p>Organize informações em uma estrutura própria. Você pode começar com o modelo extraído do relatório Grande Sertão e alterá-lo depois.</p><form onSubmit={async (event) => { event.preventDefault(); setBusy(true); try { const result = await post<{ id: string }>("/api/projects", { name, description, withTemplate }); onCreated(result.id); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao criar projeto"); } finally { setBusy(false); } }}><label>Nome do projeto<input value={name} onChange={(event) => setName(event.target.value)} required minLength={3} /></label><label>Descrição <span>(opcional)</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} placeholder="Qual é o objetivo deste espaço?" /></label><label className="check-row"><input type="checkbox" checked={withTemplate} onChange={(event) => setWithTemplate(event.target.checked)} /><span>Usar a estrutura inicial do relatório Grande Sertão <small>8 seções, 50 subtítulos e 6 níveis adicionais</small></span></label><button className="button primary" disabled={busy}>{busy ? "Criando..." : "Criar projeto →"}</button></form></div></div>;
+export function CreateProject({ onCreated, busy, setBusy, setError, projects=[], currentProjectId='', onCancel }: { onCreated: (id: string) => void; busy: boolean; setBusy: (value: boolean) => void; setError: (value: string) => void; projects?: Project[]; currentProjectId?: string; onCancel?:()=>void }) {
+  const [name,setName]=useState(''),[description,setDescription]=useState('');
+  const [template,setTemplate]=useState(currentProjectId||'template');const submitting=useRef(false);
+  return <div className="content"><div className="empty-project"><div className="eyebrow">ESPAÇO DE TRABALHO</div><h1>Novo projeto</h1><p>Comece com a estrutura de um projeto existente, com o modelo inicial ou em branco. Você poderá adaptar os tópicos depois.</p><form onSubmit={async event=>{event.preventDefault();if(submitting.current)return;submitting.current=true;setBusy(true);try{const result=await post<{id:string}>('/api/projects',{name,description,withTemplate:template==='template',...(template!=='template'&&template!=='blank'?{structureProjectId:template}:{})});onCreated(result.id);}catch(cause){setError(cause instanceof Error?cause.message:'Falha ao criar projeto');}finally{submitting.current=false;setBusy(false);}}}><label>Nome do projeto<input required minLength={3} maxLength={200} placeholder="Ex.: Guaporé" value={name} onChange={e=>setName(e.target.value)}/></label><label>Descrição <span>(opcional)</span><textarea value={description} onChange={e=>setDescription(e.target.value)} rows={3}/></label><label>Estrutura inicial<select value={template} onChange={e=>setTemplate(e.target.value)}>{projects.map(p=><option key={p.id} value={p.id}>Copiar estrutura de {p.name}</option>)}<option value="template">Modelo inicial Grande Sertão</option><option value="blank">Começar em branco</option></select></label><p className="muted-text">São copiados somente os tópicos ativos e sua hierarquia. Assuntos, documentos, histórico, participantes e vínculo com o Chatask não são copiados.</p><div className="modal-actions">{onCancel&&<button type="button" className="button ghost" disabled={busy} onClick={onCancel}>Cancelar</button>}<button className="button primary" disabled={busy}>{busy?'Criando…':'Criar projeto'}</button></div></form></div></div>;
 }
 
 function Empty({ icon, title, text }: { icon: string; title: string; text: string }) { return <div className="empty"><div className="empty-icon">{icon}</div><strong>{title}</strong><p>{text}</p></div>; }
@@ -882,35 +887,5 @@ export function SecondBrainView({ projectId, onOpenSource }: { projectId: string
         {answer.sources.map(source=><details id={`knowledge-source-${source.number}`} className="knowledge-source" key={source.number}><summary><strong>[{source.number}] {source.title}</strong><span>{kindName[source.kind] || source.kind} · {dateTime(source.created_at)} · trecho {source.part}</span></summary><p>{source.text}</p>{onOpenSource && <button className="button secondary" onClick={()=>onOpenSource(source)}>{source.item_id?"Abrir assunto e histórico":source.kind==="contexto"?"Abrir contexto":"Abrir registros do projeto"}</button>}</details>)}
       </>}
     </section>}
-  </div>;
-}
-
-type BrainTask = { id: string; title: string; description: string; responsible: string; due_date: string; status: string; item_id: string | null };
-export function TasksView({ projectId, items }: { projectId: string; items: Item[] }) {
-  const [tasks,setTasks]=useState<BrainTask[]>([]);
-  const [title,setTitle]=useState("");
-  const [responsible,setResponsible]=useState("");
-  const [due,setDue]=useState("");
-  const [itemId,setItemId]=useState("");
-  const [message,setMessage]=useState("");
-  const [saving,setSaving]=useState(false);
-  const submitting=useRef(false);
-  const loadVersion=useRef(0);
-  const load=useCallback(async()=>{const version=++loadVersion.current;try {const data=await api<{tasks:BrainTask[]}>(`/api/projects/${projectId}/tasks`);if(version===loadVersion.current)setTasks(data.tasks);}catch(e){if(version===loadVersion.current)setMessage(String(e));}},[projectId]);
-  useEffect(()=>{void load();},[load]);
-  const add=async(e:React.FormEvent)=>{e.preventDefault();if(submitting.current)return;submitting.current=true;setSaving(true);try{await post(`/api/projects/${projectId}/tasks`,{title,responsible,due_date:due,item_id:itemId||null});setTitle("");setResponsible("");setDue("");setItemId("");setMessage("Tarefa criada");await load();}catch(e){setMessage(String(e));}finally{submitting.current=false;setSaving(false);}};
-  const change=async(task:BrainTask,status:string)=>{try{await post(`/api/projects/${projectId}/tasks/${task.id}`,{status},"PATCH");await load();}catch(e){setMessage(String(e));}};
-  return <div className="tasks-view">
-    <section className="panel task-panel"><h1>Tarefas</h1><p>Organize compromissos deste projeto, com responsável, prazo e assunto relacionado.</p>
-      <form onSubmit={add} style={{display:"grid",gap:8}}>
-        <input aria-label="Nova tarefa" required maxLength={255} placeholder="Nova tarefa" value={title} onChange={e=>setTitle(e.target.value)}/>
-        <input aria-label="Responsável pela tarefa" placeholder="Responsável" value={responsible} onChange={e=>setResponsible(e.target.value)}/>
-        <label>Prazo <input type="date" value={due} onChange={e=>setDue(e.target.value)}/></label>
-        <label>Assunto relacionado <select value={itemId} onChange={e=>setItemId(e.target.value)}><option value="">Sem vínculo</option>{items.map(i=><option key={i.id} value={i.id}>{i.title}</option>)}</select></label>
-        <button className="button primary" type="submit" disabled={saving}>{saving?"Salvando...":"Criar tarefa"}</button>
-      </form>
-      {!tasks.length && <p className="muted-text">Nenhuma tarefa neste projeto. Crie a primeira acima.</p>}
-      {tasks.map(t=><article key={t.id} style={{padding:"12px 0",borderBottom:"1px solid #ddd"}}><strong>{t.title}</strong><p>{t.responsible||"Sem responsável"} · {t.due_date||"Sem prazo"} · {statusName[t.status] || t.status}</p><select aria-label={`Status de ${t.title}`} value={t.status} onChange={e=>void change(t,e.target.value)}><option value="pendente">Pendente</option><option value="em_andamento">Em andamento</option><option value="bloqueado">Bloqueado</option><option value="concluido">Concluído</option></select></article>)}
-    </section>{message&&<p role="status">{message}</p>}
   </div>;
 }
