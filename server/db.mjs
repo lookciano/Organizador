@@ -46,6 +46,18 @@ async function prepareDatabase() {
 }
 
 const schema = [
+  `CREATE TABLE IF NOT EXISTS knowledge_analyses (
+    id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL, user_id VARCHAR(36) NOT NULL,
+    state VARCHAR(20) NOT NULL, question TEXT NOT NULL, history_json LONGTEXT NOT NULL,
+    options_json TEXT NOT NULL, progress_json LONGTEXT NOT NULL, result_json LONGTEXT,
+    lease_token VARCHAR(36), lease_until VARCHAR(30), created_at VARCHAR(30) NOT NULL,
+    updated_at VARCHAR(30) NOT NULL, INDEX (project_id,user_id,created_at), INDEX (state,lease_until)
+  )`,
+  `CREATE TABLE IF NOT EXISTS knowledge_analysis_chunks (
+    analysis_id VARCHAR(36) NOT NULL, sequence_number INT NOT NULL,
+    source_json TEXT NOT NULL, body LONGTEXT NOT NULL, reviewed TINYINT NOT NULL DEFAULT 0,
+    findings_json LONGTEXT, PRIMARY KEY (analysis_id,sequence_number), INDEX (analysis_id,reviewed)
+  )`,
   `CREATE TABLE IF NOT EXISTS chatask_connections (
     session_hash CHAR(64) PRIMARY KEY, user_id VARCHAR(36) NOT NULL,
     account_id BIGINT NOT NULL, account_name VARCHAR(320) NOT NULL,

@@ -1,6 +1,9 @@
 // Test-only preload; production never imports this file or configures a remote override.
 const original=globalThis.fetch;
 const tasks=[{id:101,taskNumber:1,chatRoomId:11,description:'Tarefa da sala 11',status:'pending',assignedToName:'Participante',priority:'medium',dueDate:null,updatedAt:'2026-11-01T00:00:00.000Z'}];
+if(process.env.ANALYSIS_FIXTURE==='1'){
+  tasks.splice(0,tasks.length,...Array.from({length:300},(_,i)=>({id:1001+i,taskNumber:i+1,chatRoomId:11,description:i===299?'Conferir TASK-LAST em Ceará-Mirim':'Outra tarefa sintética '+i,status:'pending',assignedToName:'Participante',priority:'medium',dueDate:null,updatedAt:'2026-11-01T00:00:00.000Z'})));
+}
 globalThis.fetch=async(url,options={})=>{
   if(!String(url).startsWith('https://chataskweb.onrender.com/api/trpc/'))return original(url,options);
   const parsed=new URL(url),method=parsed.pathname.split('/').at(-1),input=JSON.parse(options.body||parsed.searchParams.get('input')||'{"json":null}').json;
