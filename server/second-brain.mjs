@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { db } from './db.mjs';
-import { loadKnowledge, rankKnowledge, validateKnowledgeAnswer } from './knowledge.mjs';
+import { loadKnowledge, selectKnowledge, validateKnowledgeBlocks, validateConversation } from './knowledge.mjs';
 import { planKnowledgeQuestion, answerKnowledgeQuestion } from './ai.mjs';
 
 const clean = (value, max = 500) => String(value ?? '').trim().slice(0, max);
@@ -18,21 +18,24 @@ export function registerSecondBrainRoutes(app, requireUser, membership, run) {
   const guard = [requireUser, membership];
   app.post('/api/projects/:projectId/knowledge/ask', ...guard, run(async (req,res) => {
     const question = req.body.question;
-    if(typeof question !== 'string' || question.trim().length < 3 || question.length > 1000) return res.status(400).json({error:'Escreva uma pergunta entre 3 e 1.000 caracteres.'});
+    if(typeof question !== 'string' || question.trim().length < 3 || question.length > 4000) return res.status(400).json({error:'Escreva uma instrução entre 3 e 4.000 caracteres.'});
+    let history;
+    try {history=validateConversation(req.body.history);} catch {return res.status(400).json({error:'A conversa excede o limite. Inicie uma nova conversa.'});}
     if(activeQuestions.has(req.user.id) || activeQuestions.size >= 3) return res.status(429).json({error:'Há uma consulta em andamento. Aguarde um momento e tente novamente.'});
     activeQuestions.add(req.user.id);
     try {
       const {documents,warnings} = await loadKnowledge(req.params.projectId);
       const hasAI = Boolean(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
-      let terms = [];
-      if(hasAI) try {terms=await planKnowledgeQuestion(question.trim());} catch { warnings.push('A interpretação da pergunta ficou indisponível; a seleção usou as palavras da sua pergunta.'); }
-      const {sources,omitted} = rankKnowledge(documents,question,terms);
+      let plan = {};
+      const retrievalQuestion=[...history.map(t=>t.question),question].join(' ');
+      if(hasAI) try {plan=await planKnowledgeQuestion(question.trim(),history);} catch { warnings.push('A interpretação da pergunta ficou indisponível; a seleção usou as palavras da sua pergunta.'); }
+      const {sources,omitted} = selectKnowledge(documents,retrievalQuestion,plan);
       if(omitted) warnings.push('A resposta usa uma seleção dos trechos mais relevantes. Consulte as fontes e refine a pergunta para aprofundar.');
       if(!sources.length) return res.json({status:'no_evidence',paragraphs:[],sources:[],warnings,message:'Não encontrei evidências suficientes para essa pergunta nos textos consultados. Tente indicar o equipamento, local ou fornecedor.'});
-      let paragraphs = [];
-      if(hasAI) try {paragraphs=validateKnowledgeAnswer(await answerKnowledgeQuestion(question.trim(),sources),sources);} catch { warnings.push('Não foi possível gerar uma resposta com referências válidas agora. Os trechos encontrados estão disponíveis abaixo; tente novamente.'); }
+      let blocks = [];
+      if(hasAI) try {blocks=validateKnowledgeBlocks(await answerKnowledgeQuestion(question.trim(),sources,history),sources);} catch { warnings.push('Não foi possível gerar uma resposta com referências válidas agora. Os trechos encontrados estão disponíveis abaixo; tente novamente.'); }
       else warnings.push('A IA não está configurada neste ambiente. Exibindo somente os trechos encontrados.');
-      res.json({status:paragraphs.length?'answered':'unavailable',paragraphs,sources,warnings});
+      res.json({status:blocks.length?'answered':'unavailable',blocks,paragraphs:[],sources,warnings});
     } finally { activeQuestions.delete(req.user.id); }
   }));
   app.get('/api/projects/:projectId/knowledge/search', ...guard, run(async (req, res) => {
