@@ -729,3 +729,72 @@ test('extração de documento longo analisa os trechos em paralelo e mantém a o
     else process.env.EXTRACTION_CONCURRENCY = oldConcurrency;
   }
 });
+
+
+function commonPrefix(values) {
+  if (!values.length) return '';
+  let end = values[0].length;
+  for (const value of values.slice(1)) {
+    let index = 0;
+    while (index < end && index < value.length && value[index] === values[0][index]) index++;
+    end = index;
+  }
+  return values[0].slice(0, end);
+}
+
+test('síntese mantém o bloco invariante no início, para o cache de prefixo do provedor', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const prompts = [];
+  const contexto = 'A Alfa fabrica os cubículos de Ourolândia e responde pela comissão de ensaios. '.repeat(40);
+  globalThis.fetch = async (_url, options) => {
+    const prompt = JSON.parse(options.body).input[1].content[0].text;
+    prompts.push(prompt);
+    const ids = [...new Set([...prompt.matchAll(/ID do assunto: ([^\s|]+)/g)].map((match) => match[1]))];
+    return { ok: true, json: async () => ({ output_text: JSON.stringify({ bullets: ids.map((id) => ({ item_id: id, text: `Situação de ${id}.`, locations: [] })), important_change: '', changed_item_id: '', change_before: '', change_after: '' }) }) };
+  };
+  try {
+    const items = ['a', 'b', 'c'].map((id) => ({ id, title: `Assunto ${id}`, updated_at: '2026-10-24T10:00:00Z', status: 'pendente', summary: `Estado ${id}. ${'detalhe '.repeat(400)}`, responsible: '', supplier: '', due_date: '', attention: 0 }));
+    await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos', items, updates: [], projectContext: contexto });
+    assert.ok(prompts.length >= 2);
+    const prefixo = commonPrefix(prompts);
+    assert.ok(prefixo.includes('Tópico: Equipamentos'));
+    assert.ok(prefixo.includes('Alfa fabrica os cubículos de Ourolândia'), 'o contexto entra no prefixo reaproveitável');
+    assert.ok(!prefixo.includes('Parte 2 de'), 'o que muda por parte fica fora do prefixo');
+    assert.ok(prefixo.length > contexto.length, `prefixo estável insuficiente: ${prefixo.length} caracteres`);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
+
+test('extração mantém estrutura e assuntos existentes no início, antes do trecho variável', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const prompts = [];
+  globalThis.fetch = async (_url, options) => {
+    const prompt = JSON.parse(options.body).input[1].content[0].text;
+    prompts.push(prompt);
+    const numero = Number(prompt.match(/Trecho (\d+) de/)?.[1] || 1);
+    return { ok: true, json: async () => ({ output_text: JSON.stringify({ items: [{ title: `Fato ${numero}`, summary: 'Resumo.', location: '', discipline: '', supplier: '', responsible: '', status: 'informativo', due_date: '', attention: false, node_confidence: 0.9, confidence: 0.9, evidence: 'Evidência.', node_id: 'equip', existing_item_id: '' }] }) }) };
+  };
+  try {
+    const body = Array.from({ length: 700 }, () => 'A reunião tratou de prazos e pendências de comissionamento. ').join('');
+    const result = await extractItems({
+      source: { projectName: 'Teste', title: 'Ata', body }, nodes,
+      existingItems: [{ id: 'item-1', title: 'Cubículo de Ourolândia', node_id: 'ouro-cub', location: 'Ourolândia', status: 'pendente' }],
+    });
+    assert.ok(result.length >= 2);
+    const prefixo = commonPrefix(prompts);
+    assert.ok(prefixo.includes('Estrutura permitida'), 'a estrutura entra no prefixo reaproveitável');
+    assert.ok(prefixo.includes('Assuntos existentes'), 'a lista de assuntos entra no prefixo reaproveitável');
+    assert.ok(!prefixo.includes('Trecho 2 de'), 'o número do trecho fica fora do prefixo');
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
