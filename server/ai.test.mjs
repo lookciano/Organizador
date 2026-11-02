@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeProjectMatrix, classifyNode, extractItems, structurePaths, summarizeExecutive, summarizeTopicHistory } from './ai.mjs';
+import { analyzeProjectMatrix, classifyNode, extractItems, incrementalCutoff, structurePaths, summarizeExecutive, summarizeTopicHistory } from './ai.mjs';
 import { splitForAnalysis } from './file-text.mjs';
 import { buildStationRegistry } from './stations.mjs';
 
@@ -792,6 +792,81 @@ test('extração mantém estrutura e assuntos existentes no início, antes do tr
     assert.ok(prefixo.includes('Estrutura permitida'), 'a estrutura entra no prefixo reaproveitável');
     assert.ok(prefixo.includes('Assuntos existentes'), 'a lista de assuntos entra no prefixo reaproveitável');
     assert.ok(!prefixo.includes('Trecho 2 de'), 'o número do trecho fica fora do prefixo');
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
+
+test('síntese incremental reenvia só o delta posterior à síntese anterior', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const prompts = [];
+  globalThis.fetch = async (_url, options) => {
+    const prompt = JSON.parse(options.body).input[1].content[0].text;
+    prompts.push(prompt);
+    return { ok: true, json: async () => ({ output_text: JSON.stringify({ bullets: [{ id: 'x', existingId: 'a', title: 'Entrega', situation: 'Em andamento', suppliers: '', deadlines: '', notes: 'Pendência de setembro segue válida; laudo novo recebido em 21/10.' }], important_change: '', changed_item_id: '', change_before: '', change_after: '' }) }) };
+  };
+  const item = { id: 'a', title: 'Cubículo', node_path: 'Equipamentos > Cubículos', updated_at: '2026-10-21T10:00:00Z', status: 'em_andamento', summary: 'Aguardando laudo.', location: 'Ourolândia', responsible: '', supplier: '', due_date: '', attention: 0 };
+  const updates = [
+    { id: '1', item_id: 'a', created_at: '2026-09-10T10:00:00Z', summary: 'Registro antigo que não deve ser reenviado.', evidence: '', new_status: 'pendente', source_title: 'Ata setembro' },
+    { id: '2', item_id: 'a', created_at: '2026-10-21T10:00:00Z', summary: 'Laudo novo recebido.', evidence: '', new_status: 'em_andamento', source_title: 'Ata outubro' },
+  ];
+  const priorSummaries = [{ generated_at: '2026-10-01T10:00:00Z', summary: '• Cubículo: pendência de setembro em aberto.' }];
+  try {
+    await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos > Cubículos', items: [item], updates, priorSummaries, incrementalSince: '2026-10-01T10:00:00Z' });
+    assert.doesNotMatch(prompts[0], /Registro antigo que não deve ser reenviado/, 'o histórico anterior não volta por inteiro');
+    assert.match(prompts[0], /Laudo novo recebido/, 'o delta posterior ao corte é enviado');
+    assert.match(prompts[0], /RECORTE INCREMENTAL/);
+    assert.match(prompts[0], /SÍNTESE ANTERIOR/);
+
+    prompts.length = 0;
+    await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos > Cubículos', items: [item], updates });
+    assert.match(prompts[0], /Registro antigo que não deve ser reenviado/, 'sem corte, o histórico completo continua sendo lido');
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
+
+test('o corte incremental só é usado quando a maior parte do histórico já está consolidada', () => {
+  const prior = [{ generated_at: '2026-10-01T10:00:00Z', summary: '• Síntese anterior.' }];
+  const many = Array.from({ length: 10 }, (_, i) => ({ created_at: `2026-09-${String(10 + i).padStart(2, '0')}T10:00:00Z` }));
+  const oneNew = [...many, { created_at: '2026-10-05T10:00:00Z' }];
+  assert.equal(incrementalCutoff(prior, oneNew), '2026-10-01T10:00:00Z');
+  const mostlyNew = [...many.slice(0, 2), ...Array.from({ length: 8 }, (_, i) => ({ created_at: `2026-10-${String(5 + i).padStart(2, '0')}T10:00:00Z` }))];
+  assert.equal(incrementalCutoff(prior, mostlyNew), '');
+  assert.equal(incrementalCutoff([], oneNew), '');
+  assert.equal(incrementalCutoff(prior, []), '');
+  assert.equal(incrementalCutoff([{ generated_at: '2026-09-01T10:00:00Z', summary: '' }], oneNew), '');
+});
+
+test('no recorte incremental a síntese anterior vai inteira, inclusive o agrupamento por subestação', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const prompts = [];
+  globalThis.fetch = async (_url, options) => {
+    const prompt = JSON.parse(options.body).input[1].content[0].text;
+    prompts.push(prompt);
+    return { ok: true, json: async () => ({ output_text: JSON.stringify({ bullets: [{ item_id: 'a', text: 'Pendência de setembro segue válida; laudo novo em 21/10.', locations: [{ name: 'Ourolândia', text: 'Pendência de setembro segue válida; laudo novo em 21/10.' }] }], important_change: '', changed_item_id: '', change_before: '', change_after: '' }) }) };
+  };
+  const item = { id: 'a', title: 'Cubículo', node_path: 'Fornecimento', updated_at: '2026-10-21T10:00:00Z', status: 'em_andamento', summary: 'Aguardando laudo.', location: 'Ourolândia', responsible: '', supplier: '', due_date: '', attention: 0 };
+  const updates = [
+    { id: '1', item_id: 'a', created_at: '2026-09-10T10:00:00Z', summary: 'Registro antigo não reenviado.', evidence: '', new_status: 'pendente', source_title: 'Ata setembro' },
+    { id: '2', item_id: 'a', created_at: '2026-10-21T10:00:00Z', summary: 'Laudo novo recebido.', evidence: '', new_status: 'em_andamento', source_title: 'Ata outubro' },
+  ];
+  const priorSummaries = [{ generated_at: '2026-10-01T10:00:00Z', summary: '• Subestação Ourolândia — última informação em 01/10/2026\n  ◦ Cubículo: pendência de setembro em aberto (Situação: pendente)' }];
+  try {
+    await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Fornecimento', items: [item], updates, priorSummaries, isMainSection: true, incrementalSince: '2026-10-01T10:00:00Z' });
+    assert.match(prompts[0], /SÍNTESE ANTERIOR/);
+    assert.match(prompts[0], /Subestação Ourolândia/, 'o agrupamento da síntese anterior é preservado no recorte');
+    assert.match(prompts[0], /pendência de setembro em aberto/, 'o fato anterior continua disponível ao modelo');
+    assert.doesNotMatch(prompts[0], /Registro antigo não reenviado/, 'o histórico anterior não é relido');
+    assert.match(prompts[0], /Laudo novo recebido/, 'o delta é enviado');
   } finally {
     globalThis.fetch = oldFetch;
     if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
