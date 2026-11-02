@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { analyzeProjectMatrix, classifyNode, extractItems, structurePaths, summarizeExecutive, summarizeTopicHistory } from './ai.mjs';
 import { splitForAnalysis } from './file-text.mjs';
+import { buildStationRegistry } from './stations.mjs';
 
 const nodes = [
   { id: 'equip', parent_id: null, title: 'Equipamentos' },
@@ -612,4 +613,58 @@ test('síntese informa os IDs à LLM e divide lotes quando a resposta excede o l
     if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = oldKey;
   }
+});
+
+test('extração devolve o local já canonizado e envia a lista fechada ao modelo', async () => {
+  await mockAnalysis({ items: [{ existing_item_id: '', node_id: 'cub', node_confidence: 0.95, title: 'Reator de barra', summary: 'Entrega prevista.', location: 'Ceará-Mirim (Axia)', discipline: 'Equipamentos', supplier: '', responsible: '', status: 'em_andamento', due_date: '', attention: false, confidence: 0.9, evidence: 'Reator de barra para Ceará-Mirim (Axia).' }] }, async (request) => {
+    const result = await extractItems({ source: { projectName: 'Teste', title: 'Ata', body: 'Reator de barra para Ceará-Mirim (Axia).' }, nodes, existingItems: [] });
+    assert.equal(result[0].location, 'Ceará Mirim II');
+    const prompt = request().input[1].content[0].text;
+    assert.match(prompt, /Locais canônicos do projeto/);
+    assert.match(prompt, /Ceará Mirim II \(também citada como: Ceará-Mirim/);
+    assert.match(request().input[0].content, /use SOMENTE um nome da lista de locais canônicos/);
+  });
+});
+
+test('extração mantém a menção original quando não há subestação canônica correspondente', async () => {
+  await mockAnalysis({ items: [{ existing_item_id: '', node_id: 'cub', node_confidence: 0.95, title: 'Painéis QDCA', summary: 'Entrega prevista.', location: 'Painéis QDCA e QDCC', discipline: '', supplier: '', responsible: '', status: 'informativo', due_date: '', attention: false, confidence: 0.9, evidence: 'Painéis QDCA e QDCC.' }] }, async () => {
+    const result = await extractItems({ source: { projectName: 'Teste', title: 'Ata', body: 'Painéis QDCA e QDCC.' }, nodes, existingItems: [] });
+    assert.equal(result[0].location, 'Painéis QDCA e QDCC');
+  });
+});
+
+test('síntese da seção principal agrupa variantes da mesma subestação em uma única seção', async () => {
+  const registry = buildStationRegistry([]);
+  await mockAnalysis({ bullets: [
+    { item_id: 'a', text: '', locations: [{ name: 'Ourolândia', text: 'Pendência de ensaio.' }] },
+    { item_id: 'b', text: '', locations: [{ name: 'Ourolândia II', text: 'Laudo recebido.' }] },
+    { item_id: 'c', text: '', locations: [{ name: 'SE Ourolândia II, lote GS3', text: 'Reator em transporte.' }] },
+  ], important_change: '', changed_item_id: '', change_before: '', change_after: '' }, async () => {
+    const result = await summarizeTopicHistory({
+      projectName: 'Teste', topicPath: 'Fornecimento', isMainSection: true, stationRegistry: registry,
+      items: [
+        { id: 'a', title: 'Reator', updated_at: '2026-10-24T10:00:00Z', status: 'pendente', summary: 'Ensaio pendente.', location: 'Ourolândia', responsible: '', supplier: '', due_date: '', attention: 0 },
+        { id: 'b', title: 'Laudo', updated_at: '2026-10-24T10:00:00Z', status: 'concluido', summary: 'Laudo recebido.', location: 'Ourolândia II', responsible: '', supplier: '', due_date: '', attention: 0 },
+        { id: 'c', title: 'Transporte', updated_at: '2026-10-24T10:00:00Z', status: 'em_andamento', summary: 'Em transporte.', location: 'Ourolândia (Argo)', responsible: '', supplier: '', due_date: '', attention: 0 },
+      ],
+      updates: [],
+    });
+    const sections = result.summary.split('\n').filter((line) => line.startsWith('• Subestação'));
+    assert.equal(sections.length, 1, `seções encontradas: ${sections.join(' | ')}`);
+    assert.match(sections[0], /Subestação Ourolândia II/);
+    assert.doesNotMatch(result.summary, /Subestação Ourolândia —/);
+  });
+});
+
+test('local sem correspondência canônica não cria seção de subestação', async () => {
+  const registry = buildStationRegistry([]);
+  await mockAnalysis({ bullets: [{ item_id: 'a', text: '', locations: [{ name: 'Painéis QDCA e QDCC', text: 'Em fabricação.' }] }], important_change: '', changed_item_id: '', change_before: '', change_after: '' }, async () => {
+    const result = await summarizeTopicHistory({
+      projectName: 'Teste', topicPath: 'Fornecimento', isMainSection: true, stationRegistry: registry,
+      items: [{ id: 'a', title: 'Painéis', updated_at: '2026-10-24T10:00:00Z', status: 'em_andamento', summary: 'Em fabricação.', location: 'Painéis QDCA e QDCC', responsible: '', supplier: '', due_date: '', attention: 0 }],
+      updates: [],
+    });
+    assert.doesNotMatch(result.summary, /• Subestação/);
+    assert.match(result.summary, /Informações gerais/);
+  });
 });

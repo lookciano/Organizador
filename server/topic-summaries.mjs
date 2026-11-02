@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { db } from './db.mjs';
-import { structurePaths, summarizeTopicHistory } from './ai.mjs';
+import { structurePaths, summarizeTopicHistory, incrementalCutoff } from './ai.mjs';
 import { loadProjectContext, selectProjectContext } from './project-context.mjs';
 import { prepareExecutiveSummaries } from './executive-summaries.mjs';
+import { buildStationRegistry } from './stations.mjs';
 
 const hasModelKey = () => Boolean(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
 const SUMMARY_VERSION = 8;
@@ -84,9 +85,12 @@ async function generate(nodeId, projectId, revision) {
       catch { console.warn('Progresso anterior da síntese inválido; reiniciando:', nodeId); }
     }
     const projectContext = selectProjectContext(contextEntries, contextQuery(path, items));
+    // Registro canônico: "Ourolândia", "Ourolândia II" e "SE Ourolândia lote GS3"
+    // passam a ser uma única subestação na síntese.
+    const stationRegistry = buildStationRegistry(nodes);
     const model = process.env.OPENROUTER_API_KEY ? process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4.1-flash-1017' : process.env.OPENAI_MODEL || 'gpt-4.1-mini';
-    console.info('Iniciando síntese:', nodeId, { modelo: model, assuntos: items.length, registros: updates.length, sintesesAnteriores: priorSummaries.length, retomandoDe: resumeProgress?.completed_count || 0 });
-    const result = await summarizeTopicHistory({ projectName: projects[0].name, topicPath: path, items, updates, priorSummaries, isMainSection: !node.parent_id, projectContext, resumeProgress,
+    console.info('Iniciando síntese:', nodeId, { modelo: model, assuntos: items.length, registros: updates.length, sintesesAnteriores: priorSummaries.length, retomandoDe: resumeProgress?.completed_count || 0, subestacoes: stationRegistry.length });
+    const result = await summarizeTopicHistory({ projectName: projects[0].name, topicPath: path, items, updates, priorSummaries, isMainSection: !node.parent_id, projectContext, resumeProgress, stationRegistry,
       onProgress: async ({ completed, total, result: partial }) => {
         await db().execute(`INSERT INTO topic_summary_progress (node_id,project_id,revision,completed_count,result_json,updated_at)
           SELECT node_id,project_id,revision,?,?,? FROM topic_summaries
