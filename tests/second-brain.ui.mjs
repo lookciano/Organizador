@@ -122,7 +122,7 @@ test('conversation renders a table and sends a bounded follow-up without losing 
  await ask('Crie uma tabela de tarefas com base nas sínteses');
  assert.equal(document.querySelectorAll('table').length,1);assert.match(document.querySelector('tbody').textContent,/Maria/);assert.ok(document.querySelector('[aria-label="Copiar resposta"]'));
  await act(()=>document.querySelector('a').click());assert.equal(document.querySelector('.knowledge-evidence').open,true);assert.equal(document.querySelector('.knowledge-source').open,true);
- await ask('Agora organize por responsável');assert.equal(calls[1].body.history.length,1);assert.match(calls[1].body.history[0].answer,/Maria/);assert.equal(document.querySelectorAll('table').length,2);
+ await ask('Agora organize por responsável');assert.equal(calls[1].body.history.length,1);assert.match(calls[1].body.history[0].answer,/Maria/);assert.doesNotMatch(calls[1].body.history[0].answer,/Fontes:|\[1\]/);assert.equal(document.querySelectorAll('table').length,2);
  assert.equal(document.querySelectorAll('#knowledge-source-1').length,1);assert.ok(document.querySelector('#knowledge-source-1-1'));
  assert.ok(calls.every(c=>c.url==='/api/projects/a/knowledge/ask'));
  await act(()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='Nova conversa').click());

@@ -33,7 +33,18 @@ export function registerSecondBrainRoutes(app, requireUser, membership, run) {
       if(omitted) warnings.push('A resposta usa uma seleção dos trechos mais relevantes. Consulte as fontes e refine a pergunta para aprofundar.');
       if(!sources.length) return res.json({status:'no_evidence',paragraphs:[],sources:[],warnings,message:'Não encontrei evidências suficientes para essa pergunta nos textos consultados. Tente indicar o equipamento, local ou fornecedor.'});
       let blocks = [];
-      if(hasAI) try {blocks=validateKnowledgeBlocks(await answerKnowledgeQuestion(question.trim(),sources,history),sources);} catch { warnings.push('Não foi possível gerar uma resposta com referências válidas agora. Os trechos encontrados estão disponíveis abaixo; tente novamente.'); }
+      if(hasAI) try {
+        const generated=await answerKnowledgeQuestion(question.trim(),sources,history);
+        try {blocks=validateKnowledgeBlocks(generated,sources);} catch {
+          console.warn('knowledge_answer_rejected: invalid_structure_or_citations');
+          throw new Error('Invalid response');
+        }
+      } catch (error) {
+        const status=String(error.message || '').match(/análise \((\d{3})\)/)?.[1];
+        const reason=error.name==='TimeoutError'?'timeout':status?`provider_http_${status}`:error.message==='Invalid response'?'validation':'provider_response';
+        console.warn(`knowledge_answer_unavailable: ${reason}`);
+        warnings.push('Não foi possível gerar uma resposta com referências válidas agora. Os trechos encontrados estão disponíveis abaixo; tente novamente.');
+      }
       else warnings.push('A IA não está configurada neste ambiente. Exibindo somente os trechos encontrados.');
       res.json({status:blocks.length?'answered':'unavailable',blocks,paragraphs:[],sources,warnings});
     } finally { activeQuestions.delete(req.user.id); }
