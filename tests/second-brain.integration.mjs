@@ -312,6 +312,9 @@ test('PR #1: TiDB migration, authorization and regression', { skip: !target, tim
     const partial=await advanceAnalysis(analysisId,false);assert.ok(partial.progress.completed>0);assert.ok(partial.progress.total>24);
     await stop();await admin.execute("UPDATE knowledge_analyses SET lease_until=? WHERE id=? AND state='working'",['2000-01-01',analysisId]);await start('server/index.mjs',true);
     const result=await advanceAnalysis(analysisId);assert.equal(result.state,'complete');assert.equal(result.progress.completed,result.progress.total);
+    assert.equal(result.result.coverage.history_included,false);assert.equal(result.result.coverage.originals_included,false);
+    const [readChunks]=await admin.execute('SELECT source_json FROM knowledge_analysis_chunks WHERE analysis_id=?',[analysisId]);
+    assert.ok(readChunks.every(r=>!['assunto','historico','fonte','tarefa'].includes(JSON.parse(r.source_json).kind)));
     assert.equal(result.result.coverage.task_count,300);assert.equal(result.result.coverage.comparison_complete,true);
     assert.equal(result.result.comparisons.length,1);assert.equal(result.result.comparisons[0].classification,'existing');assert.equal(result.result.comparisons[0].matches[0].task_id,1300);
     assert.ok(result.result.sources.some(s=>s.text.includes('TASK-LAST')));assert.ok(result.result.sources.every(s=>s.id!=='source-b'&&s.id!=='item-b'));
@@ -338,6 +341,27 @@ test('PR #1: TiDB migration, authorization and regression', { skip: !target, tim
     await Promise.all(Array.from({length:5},()=>request(`${analysisBase}/${id}/advance`,{method:'POST',body:{}})));
     const result=await advanceAnalysis(id);assert.equal(result.state,'complete');assert.equal(result.result.comparisons.length,1);
     const [[row]]=await admin.execute('SELECT SUM(reviewed) AS read_count,COUNT(*) AS total FROM knowledge_analysis_chunks WHERE analysis_id=?',[id]);assert.equal(Number(row.read_count),row.total);
+  });
+  await t.test('summary-only proposals do not fetch the room and keep context in every synthesis review',async()=>{
+    const id=randomUUID();await request(analysisBase,{method:'POST',body:{id,question:'Faça uma lista de tarefas a partir das sínteses'}});
+    const value=await advanceAnalysis(id);assert.equal(value.state,'complete');
+    assert.equal(value.result.coverage.task_status,'not_requested');assert.equal(value.result.coverage.task_count,null);
+    assert.equal(value.result.coverage.history_included,false);assert.equal(value.result.coverage.originals_included,false);
+    assert.ok(value.result.comparisons.length);assert.ok(value.result.comparisons.every(c=>c.classification==='not_compared'));
+  });
+  await t.test('unfinished legacy jobs replan without preserving the oversized historical queue',async()=>{
+    const id=randomUUID();await request(analysisBase,{method:'POST',body:{id,question:'Resumo a partir das sínteses'}});
+    await admin.execute("UPDATE knowledge_analyses SET state='paused',progress_json=? WHERE id=?",[JSON.stringify({phase:'review',completed:88,total:1103}),id]);
+    await admin.execute('INSERT INTO knowledge_analysis_chunks (analysis_id,sequence_number,source_json,body) VALUES (?,?,?,?)',[id,1103,JSON.stringify({kind:'historico',id:'obsolete'}),'Legacy history']);
+    await request(`${analysisBase}/${id}/advance`,{method:'POST',body:{}});
+    const value=await advanceAnalysis(id);assert.equal(value.state,'complete');assert.ok(value.progress.total<1103);
+    const [old]=await admin.execute('SELECT body FROM knowledge_analysis_chunks WHERE analysis_id=? AND sequence_number=1103',[id]);assert.equal(old.length,0);
+  });
+  await t.test('explicit detailed history and originals are included when requested',async()=>{
+    const id=randomUUID();await request(analysisBase,{method:'POST',body:{id,question:'Consulte o histórico detalhado e os documentos originais'}});
+    const value=await advanceAnalysis(id);assert.equal(value.state,'complete');assert.equal(value.result.coverage.history_included,true);assert.equal(value.result.coverage.originals_included,true);
+    const [chunks]=await admin.execute('SELECT source_json FROM knowledge_analysis_chunks WHERE analysis_id=?',[id]);
+    for(const kind of ['historico','assunto','fonte'])assert.ok(chunks.some(r=>JSON.parse(r.source_json).kind===kind));
   });
   await t.test('cancellation invalidates work and lets a new analysis start',async()=>{
     const id=randomUUID();await request(analysisBase,{method:'POST',body:{id,question:'Análise para encerrar'}});

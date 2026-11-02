@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readAllPages,topicPaths,makeChunks,batchBySize,validateFindings,uniqueCandidates,validateMatches,finishComparisons} from './project-analysis.mjs';
+import {loadProjectCorpus,readAllPages,topicPaths,makeChunks,batchBySize,validateFindings,uniqueCandidates,validateMatches,finishComparisons} from './project-analysis.mjs';
 import {publicAnalysis} from './analysis-jobs.mjs';
 
 test('full pagination visits records after old 300-record limit and scopes each page',async()=>{
@@ -39,4 +39,42 @@ test('unavailable tasks never imply new tasks; completed matches require review'
 });
 test('public progress hides model working buffers and makes expired work resumable',()=>{
  const result=publicAnalysis({id:'a',question:'Teste',state:'working',lease_until:'2000-01-01',progress_json:JSON.stringify({phase:'review',total:9,completed:4,tasks:{private:'hidden'},findings:[{text:'hidden'}]}),result_json:null});assert.equal(result.state,'ready');assert.equal(result.progress.completed,4);assert.doesNotMatch(JSON.stringify(result),/hidden/);
+});
+
+function corpusFixture() {
+ const queries=[],stamp='2026-01-01T00:00:00.000Z';
+ const nodes=Array.from({length:605},(_,i)=>({id:String(i+1).padStart(5,'0'),title:`Tópico ${i+1}`,archived:0,parent_id:null}));
+ const database={execute:async(sql,args)=>{
+  queries.push(sql);assert.equal(args[0],'project-a');let rows=[];
+  if(sql.includes('FROM projects WHERE'))return [[{id:'project-a',name:'Projeto A',description:'Descrição'}]];
+  if(sql.includes('MAX(updated_at)'))return [[{node_id:'00001',latest_update:'2026-02-01T00:00:00.000Z'}]];
+  if(sql.includes('FROM structure_nodes'))rows=nodes;
+  else if(sql.includes('FROM project_context_entries')){assert.match(sql,/archived=0/);rows=[{id:'context',title:'Contexto',body:'Relação entre equipamentos e responsáveis.'}];}
+  else if(sql.includes('FROM topic_summaries')){assert.match(sql,/n.archived=0/);rows=nodes.map(n=>({...n,node_id:n.id,summary:`Síntese ${n.id}`,analysis_status:'completed',generated_at:stamp}));}
+  else if(sql.includes('FROM topic_executive_summaries'))rows=[{node_id:'00001',title:'Resumo',summary:'Resumo executivo',analysis_status:'completed',generated_at:stamp}];
+  else if(sql.includes('FROM sources'))rows=[{id:'pending',title:'Documento pendente',analysis_status:'pending'}];
+  else if(sql.includes('FROM item_updates'))rows=[{id:'update',summary:'Histórico explicitamente solicitado'}];
+  else if(sql.includes('FROM items'))rows=[{id:'item',title:'Assunto',summary:'Registro individual',node_id:'00001'}];
+  else assert.fail('Unexpected corpus query');
+  const key=sql.includes('s.node_id>?')?'node_id':'id';
+  return [rows.filter(r=>r[key]>args[1]).slice(0,200)];
+ }};
+ return {database,queries};
+}
+test('default corpus reads every saved summary with context, excludes raw/history text and reports stale or pending sources',async()=>{
+ const {database,queries}=corpusFixture(),result=await loadProjectCorpus('project-a',database);
+ assert.equal(result.coverage.counts.sintese,605);assert.equal(result.coverage.counts.resumo,1);assert.equal(result.coverage.counts.estrutura,605);
+ assert.ok(result.documents.some(d=>d.kind==='sintese'&&d.node_id==='00605'));
+ assert.ok(result.documents.some(d=>d.kind==='contexto'&&d.text.includes('Relação entre equipamentos')));
+ assert.equal(result.documents.filter(d=>d.kind==='estrutura').length,1);
+ assert.ok(result.documents.every(d=>!['assunto','historico','fonte'].includes(d.kind)));
+ assert.ok(!queries.some(q=>q.includes('FROM item_updates')));
+ assert.ok(queries.filter(q=>q.includes('FROM sources')).every(q=>!q.includes('body')&&!q.includes('file_data')));
+ assert.equal(result.coverage.history_included,false);assert.equal(result.coverage.originals_included,false);
+ assert.ok(result.coverage.issues.some(i=>i.kind==='fonte'));assert.ok(result.coverage.issues.some(i=>i.message.includes('registros atualizados')));
+});
+test('explicit history and original requests extend, rather than replace, the living report',async()=>{
+ const {database}=corpusFixture(),result=await loadProjectCorpus('project-a',database,{history:true,originals:true});
+ for(const kind of ['contexto','estrutura','sintese','resumo','assunto','historico','fonte'])assert.ok(result.documents.some(d=>d.kind===kind),kind);
+ assert.equal(result.coverage.history_included,true);assert.equal(result.coverage.originals_included,true);
 });
