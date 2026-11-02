@@ -180,7 +180,8 @@ async function advance(row,token,session) {
     // Provider responses may contain private text: log categories only.
     const validationCodes={'Evidência inválida na análise.':'INVALID_EVIDENCE','Proposta sem evidência válida.':'INVALID_CANDIDATE','Etapa muito extensa. Reduza o lote e retome.':'OVERSIZED_OUTPUT','Reduction discarded findings':'EMPTY_REDUCTION','Reduction did not converge':'REDUCTION_NOT_SMALLER','Invalid analysis plan':'INVALID_PLAN','Incomplete coverage':'INCOMPLETE_COVERAGE','Incomplete single passage':'INCOMPLETE_PASSAGE'};
     const category=/^[A-Z_0-9]+$/.test(error.code||'')?error.code:validationCodes[error.message]|| (error.name==='TimeoutError'?'PROVIDER_TIMEOUT':/Falha na análise/.test(error.message)?'PROVIDER_ERROR':/IA.*(JSON|interrompeu|concluiu)/.test(error.message)?'PROVIDER_INCOMPLETE':'VALIDATION_OR_STEP_ERROR');
-    console.warn('project_analysis_paused:',phase,category,'duration_ms',Date.now()-started);
+    const frame=String(error.stack||'').match(/\/(?:server)\/([a-z-]+\.mjs):([0-9]+):[0-9]+/);
+    console.warn('project_analysis_paused:',phase,category,'duration_ms',Date.now()-started,...(frame?['location',`${frame[1]}:${frame[2]}`]:[]));
     const p=json(row.progress_json);p.error='Esta etapa não foi concluída. O progresso anterior foi salvo; tente retomar.';
     await db().execute('UPDATE knowledge_analyses SET state=?,progress_json=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=? AND state=? AND lease_token=?',['paused',JSON.stringify(p),now(),row.id,'working',token]).catch(()=>{});
   }finally{clearInterval(heartbeat);active.delete(row.id);}

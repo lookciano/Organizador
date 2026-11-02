@@ -131,18 +131,20 @@ export function validateConversation(history = []) {
 }
 
 export function validateKnowledgeBlocks(result, sources) {
-  if(!Array.isArray(result?.blocks) || !result.blocks.length || result.blocks.length>24) throw new Error('Invalid response blocks');
+  const fail=code=>{throw Object.assign(new Error('A resposta da IA não passou na validação.'),{code});};
+  if(!Array.isArray(result?.blocks) || !result.blocks.length || result.blocks.length>24) fail('ANSWER_BLOCK_COUNT');
   const numbers=new Set(sources.map(s=>s.number));
   const string=(value,max)=>typeof value==='string' && value.length<=max;
   let chars=0;
   return result.blocks.map(b=>{
-    if(!['paragraph','list','table'].includes(b.type) || !string(b.title,200) || !string(b.text,4000) ||
-      !Array.isArray(b.items) || b.items.length>30 || b.items.some(x=>!string(x,2000)) ||
-      !Array.isArray(b.columns) || b.columns.length>8 || b.columns.some(x=>!string(x,150)) ||
-      !Array.isArray(b.rows) || b.rows.length>30 || b.rows.some(r=>!Array.isArray(r) || r.length!==b.columns.length || r.some(x=>!string(x,1500))) ||
-      !Array.isArray(b.source_numbers) || !b.source_numbers.length || b.source_numbers.some(n=>!numbers.has(n))) throw new Error('Invalid grounded block');
-    if(b.type==='paragraph' && !b.text.trim() || b.type==='list' && !b.items.length || b.type==='table' && (!b.columns.length || !b.rows.length)) throw new Error('Empty block');
-    chars+=JSON.stringify(b).length;if(chars>32000) throw new Error('Response too long');
+    if(!b || !['paragraph','list','table'].includes(b.type)) fail('ANSWER_BLOCK_TYPE');
+    if(!string(b.title,200) || !string(b.text,4000)) fail('ANSWER_TEXT_SIZE');
+    if(!Array.isArray(b.items) || b.items.length>30 || b.items.some(x=>!string(x,2000))) fail('ANSWER_LIST_SHAPE');
+    if(!Array.isArray(b.columns) || b.columns.length>8 || b.columns.some(x=>!string(x,150))) fail('ANSWER_COLUMNS_SHAPE');
+    if(!Array.isArray(b.rows) || b.rows.length>30 || b.rows.some(r=>!Array.isArray(r) || r.length!==b.columns.length || r.some(x=>!string(x,1500)))) fail('ANSWER_ROWS_SHAPE');
+    if(!Array.isArray(b.source_numbers) || !b.source_numbers.length || b.source_numbers.some(n=>!numbers.has(n))) fail('ANSWER_CITATION');
+    if(b.type==='paragraph' && !b.text.trim() || b.type==='list' && !b.items.length || b.type==='table' && (!b.columns.length || !b.rows.length)) fail('ANSWER_EMPTY_BLOCK');
+    chars+=JSON.stringify(b).length;if(chars>32000) fail('ANSWER_TOTAL_SIZE');
     return {type:b.type,title:b.title,text:b.text,items:b.items,columns:b.columns,rows:b.rows,source_numbers:[...new Set(b.source_numbers)]};
   });
 }
