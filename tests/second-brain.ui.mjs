@@ -14,7 +14,7 @@ const { createRoot } = await import('react-dom/client');
 await mkdir('node_modules/.cache', { recursive: true });
 const temporary = await mkdtemp(resolve('node_modules/.cache/brain-test-'));
 await build({ entryPoints: ['src/App.tsx'], outfile: `${temporary}/app.mjs`, bundle: true, packages: 'external', platform: 'node', format: 'esm', jsx: 'automatic', logLevel: 'silent' });
-const { SecondBrainView, TasksView, TopicSynthesis, ExecutiveSummaryView } = await import(pathToFileURL(`${temporary}/app.mjs`));
+const { SecondBrainView, TasksView, CreateProject, TopicSynthesis, ExecutiveSummaryView } = await import(pathToFileURL(`${temporary}/app.mjs`));
 test.after(() => rm(temporary, { recursive: true, force: true }));
 const reply = data => new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
@@ -58,21 +58,43 @@ test('unavailable AI is clearly distinguished from no evidence and short questio
  await ask('a');assert.equal(calls,0);assert.match(document.body.textContent,/pelo menos três/);
  await ask('Cubículo');assert.equal(calls,1);assert.match(document.body.textContent,/Não foi possível gerar a resposta/);assert.doesNotMatch(document.body.textContent,/Nenhum resultado encontrado/);
 });
-test('independent task workspace prevents double submission',async t=>{
- const saving=deferred();let posts=0;
- await mount(t,async(_url,options)=>{if(options?.method==='POST'){posts++;return saving.promise;}return reply({tasks:[]});},TasksView);
- await input(document.querySelector('[aria-label="Nova tarefa"]'),'Tarefa de teste');await submit();await submit();
- assert.equal(posts,1);assert.equal(document.querySelector('form button').disabled,true);
- await act(()=>saving.resolve(reply({id:'task'})));assert.equal(document.querySelector('[aria-label="Nova tarefa"]').value,'');
- assert.doesNotMatch(document.body.textContent,/Pergunte ao projeto/);
+const connectedReply=(url)=>url==='/api/chatask/connection'?{connected:true,name:'Conta de teste'}:url==='/api/chatask/rooms'?{rooms:[{id:11,name:'Grande Sertão'},{id:12,name:'Guaporé'}]}:url.endsWith('/chatask')?{room:{id:11,name:'Grande Sertão'},legacyCount:0}:{room:{id:11,name:'Grande Sertão'},tasks:[]};
+test('one task workspace reads only linked room tasks, never local or personal tasks',async t=>{
+ const calls=[];
+ await mount(t,async url=>{calls.push(url);return reply(connectedReply(url));},TasksView);
+ assert.ok(calls.includes('/api/projects/a/chatask/tasks'));assert.ok(calls.every(url=>!url.includes('personalTasks')&&!url.endsWith('/a/tasks')));
+ assert.match(document.body.textContent,/mesma lista do Chatask/);assert.match(document.body.textContent,/Minhas tarefas/);
 });
-test('switching projects clears the task draft and ignores the old task list',async t=>{
- const old=deferred();
- const root=await mount(t,async url=>url.includes('/a/')?old.promise:reply({tasks:[{id:'b',title:'Tarefa B',status:'pendente'}]}),TasksView);
- await input(document.querySelector('[aria-label="Nova tarefa"]'),'Rascunho A');
- await act(()=>root.render(createElement(TasksView,{projectId:'b',items:[],key:'b'})));
- await act(()=>old.resolve(reply({tasks:[{id:'a',title:'Tarefa A',status:'pendente'}]})));
- assert.match(document.body.textContent,/Tarefa B/);assert.doesNotMatch(document.body.textContent,/Tarefa A/);assert.equal(document.querySelector('[aria-label="Nova tarefa"]').value,'');
+test('Chatask task creation prevents duplicates and uses the linked room',async t=>{
+ const pending=deferred();let posts=0,body;
+ await mount(t,async(url,options)=>{if(options?.method==='POST'){posts++;body=JSON.parse(options.body);return pending.promise;}return reply(connectedReply(url));},TasksView);
+ await ask('Maria deve revisar o projeto até 15/11/2026');await submit();assert.equal(posts,1);assert.equal(body.roomId,11);assert.ok(body.operationId);
+ await act(()=>pending.resolve(reply({created:true})));
+ assert.match(document.body.textContent,/Tarefa criada no Chatask/);
+});
+test('project switch ignores old tasks and discards the creation draft',async t=>{
+ const pending=deferred();
+ const root=await mount(t,async url=>url==='/api/projects/a/chatask/tasks'?pending.promise:reply(connectedReply(url)),TasksView);
+ await act(()=>root.render(createElement(TasksView,{projectId:'b',key:'b'})));
+ await act(()=>pending.resolve(reply({tasks:[{id:1,description:'Tarefa antiga'}]})));
+ assert.doesNotMatch(document.body.textContent,/Tarefa antiga/);assert.equal(document.querySelector('textarea').value,'');
+});
+test('disconnected tasks show explicit account connection and no independent task creation',async t=>{
+ await mount(t,async url=>reply(url==='/api/chatask/connection'?{connected:false}:{room:null,legacyCount:0}),TasksView,{owner:true});
+ assert.match(document.body.textContent,/Conectar minha conta/);assert.equal(document.querySelector('textarea'),null);
+ assert.equal(document.querySelector('input[type="password"]').value,'');
+});
+test('failed creation retains attempt lock until the user checks the list',async t=>{
+ await mount(t,async(url,options)=>options?.method==='POST'?new Response(JSON.stringify({error:'Criação não confirmada; confira a lista'}),{status:502}):reply(connectedReply(url)),TasksView);
+ await ask('Criar tarefa sintética');assert.match(document.body.textContent,/Criação não confirmada/);
+ const refresh=[...document.querySelectorAll('button')].find(b=>b.textContent==='Atualizar');await act(()=>refresh.click());
+ assert.equal([...document.querySelectorAll('button')].find(b=>b.textContent==='Criar tarefa no Chatask').disabled,true);
+});
+test('new project sends the chosen existing structure and blocks repeated submits',async t=>{
+ const pending=deferred();let count=0,body;
+ await mount(t,async(url,options)=>{assert.equal(url,'/api/projects');count++;body=JSON.parse(options.body);return pending.promise;},CreateProject,{projects:[{id:'a',name:'Grande Sertão'}],currentProjectId:'a',busy:false,setBusy:()=>{},setError:()=>{},onCreated:()=>{}});
+ await input(document.querySelector('input'),'Guaporé');await submit();await submit();assert.equal(count,1);assert.equal(body.structureProjectId,'a');assert.equal(body.withTemplate,false);assert.equal(body.name,'Guaporé');
+ await act(()=>pending.resolve(reply({id:'new'})));
 });
 test('copy controls copy the complete synthesis and executive summary with feedback',async t=>{
  const originalNavigator=Object.getOwnPropertyDescriptor(globalThis,'navigator');let copied='';

@@ -46,6 +46,20 @@ async function prepareDatabase() {
 }
 
 const schema = [
+  `CREATE TABLE IF NOT EXISTS chatask_connections (
+    session_hash CHAR(64) PRIMARY KEY, user_id VARCHAR(36) NOT NULL,
+    account_id BIGINT NOT NULL, account_name VARCHAR(320) NOT NULL,
+    encrypted_token TEXT NOT NULL, INDEX (user_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS chatask_project_rooms (
+    project_id VARCHAR(36) PRIMARY KEY, room_id BIGINT NOT NULL,
+    room_name VARCHAR(255) NOT NULL, UNIQUE KEY chatask_room_unique (room_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS chatask_operations (
+    id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL,
+    user_id VARCHAR(36) NOT NULL, room_id BIGINT NOT NULL,
+    state VARCHAR(20) NOT NULL, created_at VARCHAR(30) NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS second_brain_tasks (
     id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL,
     item_id VARCHAR(36), title VARCHAR(255) NOT NULL,
@@ -213,7 +227,7 @@ export async function initializeDatabase() {
   }
 }
 
-export async function createProject(name, description, ownerId, withTemplate) {
+export async function createProject(name, description, ownerId, withTemplate, structureProjectId = null) {
   const connection = await db().getConnection();
   const projectId = randomUUID();
   const now = new Date().toISOString();
@@ -223,7 +237,16 @@ export async function createProject(name, description, ownerId, withTemplate) {
       [projectId, name, description, ownerId, now]);
     await connection.execute('INSERT INTO memberships (project_id,user_id,role,created_at) VALUES (?,?,?,?)',
       [projectId, ownerId, 'owner', now]);
-    if (withTemplate) {
+    if (structureProjectId) {
+      const [[access]] = await connection.execute('SELECT project_id FROM memberships WHERE project_id=? AND user_id=?',[structureProjectId,ownerId]);
+      if(!access) throw Object.assign(new Error('Projeto de origem não autorizado'),{status:403});
+      const [nodes] = await connection.execute('SELECT id,parent_id,title,sort_order FROM structure_nodes WHERE project_id=? AND archived=0 ORDER BY sort_order,id',[structureProjectId]);
+      const ids = new Map(nodes.map(n=>[n.id,randomUUID()]));
+      for(const node of nodes) {
+        if(node.parent_id && !ids.has(node.parent_id)) throw Object.assign(new Error('A estrutura de origem possui um tópico ativo dentro de um tópico arquivado. Revise a estrutura antes de copiar.'),{status:409});
+        await connection.execute('INSERT INTO structure_nodes (id,project_id,parent_id,title,sort_order,archived,created_at) VALUES (?,?,?,?,?,?,?)',[ids.get(node.id),projectId,node.parent_id?ids.get(node.parent_id):null,node.title,node.sort_order,0,now]);
+      }
+    } else if (withTemplate) {
       const template = JSON.parse(await readFile(new URL('../estrutura-inicial.json', import.meta.url), 'utf8'));
       async function insertNodes(nodes, parentId = null) {
         for (let index = 0; index < nodes.length; index++) {

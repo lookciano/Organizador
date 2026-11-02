@@ -66,7 +66,7 @@ test('PR #1: TiDB migration, authorization and regression', { skip: !target, tim
   }
   t.after(stop);
   async function start(entrypoint = 'server/index.mjs') {
-    server = spawn(process.execPath, [entrypoint], { env: {
+    server = spawn(process.execPath, ['--import', './tests/chatask-upstream.mock.mjs', entrypoint], { env: {
       PATH: process.env.PATH, NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS,
       DATABASE_URL: target, BOOTSTRAP_EMAIL: 'owner-a@example.invalid', BOOTSTRAP_PASSWORD: password,
       HOST: '127.0.0.1', PORT: String(port), APP_ORIGIN: origin,
@@ -83,7 +83,7 @@ test('PR #1: TiDB migration, authorization and regression', { skip: !target, tim
     await start();
     assert.deepEqual(await fingerprints(), before);
     const [afterTables] = await admin.query('SHOW TABLES');
-    assert.deepEqual(afterTables.map(row => Object.values(row)[0]).filter(name => !tableNames.includes(name)), ['second_brain_tasks']);
+    assert.deepEqual(afterTables.map(row => Object.values(row)[0]).filter(name => !tableNames.includes(name)), ['chatask_connections', 'chatask_operations', 'chatask_project_rooms', 'second_brain_tasks']);
   });
   await t.test('second startup is idempotent and keeps existing users and rows', async () => {
     await stop(); await start(); assert.deepEqual(await fingerprints(), before);
@@ -104,6 +104,68 @@ test('PR #1: TiDB migration, authorization and regression', { skip: !target, tim
     }
   });
   const paths = ['/api/projects/project-a/knowledge/search?q=Teste', '/api/projects/project-a/tasks'];
+
+  let taskBaseline;
+  await t.test('project structure cloning preserves hierarchy with new IDs and no project data',async()=>{
+    await admin.execute('INSERT INTO structure_nodes VALUES (?,?,?,?,?,?,?)',['parent-a','project-a',null,'Equipamentos',3,0,stamp]);
+    await admin.execute('INSERT INTO structure_nodes VALUES (?,?,?,?,?,?,?)',['child-a','project-a','parent-a','Cubículos',2,0,stamp]);
+    await admin.execute('INSERT INTO structure_nodes VALUES (?,?,?,?,?,?,?)',['archived-a','project-a',null,'Arquivado',8,1,stamp]);
+    const clone=await request('/api/projects',{method:'POST',body:{name:'Guaporé sintético',structureProjectId:'project-a',withTemplate:false}});
+    assert.equal(clone.status,201);const id=clone.data.id;
+    const [nodes]=await admin.execute('SELECT * FROM structure_nodes WHERE project_id=? ORDER BY sort_order',[id]);
+    assert.equal(nodes.length,2);assert.equal(nodes[0].title,'Cubículos');assert.equal(nodes[0].parent_id,nodes[1].id);assert.notEqual(nodes[1].id,'parent-a');
+    for(const table of ['items','sources','project_context_entries','second_brain_tasks','chatask_project_rooms']){const [[row]]=await admin.execute(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id=?`,[id]);assert.equal(row.n,0);}
+    const [members]=await admin.execute('SELECT * FROM memberships WHERE project_id=?',[id]);assert.equal(members.length,1);assert.equal(members[0].role,'owner');
+    assert.equal((await request('/api/projects',{user:'owner-b',method:'POST',body:{name:'Sem acesso',structureProjectId:'project-a'}})).status,403);
+    const [[denied]]=await admin.execute('SELECT COUNT(*) AS n FROM projects WHERE name=?',['Sem acesso']);assert.equal(denied.n,0);
+    taskBaseline=await fingerprints();
+  });
+  await t.test('Chatask connects per session without returning or storing a clear token',async()=>{
+    assert.equal((await request('/api/chatask/connection')).data.connected,false);
+    assert.equal((await request('/api/chatask/rooms')).status,401);
+    const c=await request('/api/chatask/connection',{method:'POST',body:{email:'fixture@example.invalid',password:'fixture-password'}});
+    assert.equal(c.status,200);assert.doesNotMatch(JSON.stringify(c.data),/fixture-token/);
+    const [[stored]]=await admin.execute('SELECT * FROM chatask_connections WHERE user_id=?',['owner-a']);assert.ok(stored.encrypted_token);assert.doesNotMatch(stored.encrypted_token,/fixture-token/);
+    assert.equal((await request('/api/chatask/connection',{user:'member-a'})).data.connected,false);
+  });
+  await t.test('project room binding requires owner membership and does not steal another project binding',async()=>{
+    assert.equal((await request('/api/projects/project-a/chatask',{method:'PUT',body:{roomId:11},user:'member-a'})).status,403);
+    assert.equal((await request('/api/projects/project-a/chatask',{method:'PUT',body:{roomId:999}})).status,403);
+    assert.equal((await request('/api/projects/project-a/chatask',{method:'PUT',body:{roomId:11}})).status,200);
+    await request('/api/chatask/connection',{user:'owner-b',method:'POST',body:{email:'fixture@example.invalid',password:'fixture-password'}});
+    assert.equal((await request('/api/projects/project-b/chatask',{user:'owner-b',method:'PUT',body:{roomId:11}})).status,409);
+    assert.equal((await request('/api/projects/project-a/chatask')).data.room.id,11);
+    assert.equal((await request('/api/projects/project-b/chatask',{user:'owner-b'})).data.room,null);
+  });
+  await t.test('Chatask tasks are live room records; foreign IDs and unsupported personal-task operations are rejected',async()=>{
+    const list=await request('/api/projects/project-a/chatask/tasks');assert.equal(list.status,200);assert.equal(list.data.tasks[0].description,'Tarefa da sala 11');
+    assert.equal((await request('/api/projects/project-a/chatask/tasks',{user:'owner-b'})).status,403);
+    const edit=await request('/api/projects/project-a/chatask/tasks/101',{method:'PATCH',body:{roomId:11,description:'Descrição revista',updatedAt:'2026-11-01T00:00:00.000Z'}});assert.equal(edit.status,200);
+    assert.equal((await request('/api/projects/project-a/chatask/tasks')).data.tasks[0].description,'Descrição revista');
+    assert.equal((await request('/api/projects/project-a/chatask/tasks/999',{method:'PATCH',body:{roomId:11,status:'completed',updatedAt:'stamp'}})).status,404);
+    assert.equal((await request('/api/projects/project-a/chatask/tasks/101',{method:'PATCH',body:{roomId:12,status:'completed',updatedAt:'stamp'}})).status,409);
+    assert.equal((await request('/api/projects/project-a/chatask/tasks/101',{method:'PATCH',body:{roomId:11,status:'completed',updatedAt:'old'}})).status,409);
+    assert.equal((await request('/api/projects/project-a/chatask/tasks/101',{method:'PATCH',body:{roomId:11,dueDate:'2026-12-01'}})).status,400);
+    const latest=(await request('/api/projects/project-a/chatask/tasks')).data.tasks[0];
+    assert.equal((await request('/api/projects/project-a/chatask/tasks/101',{method:'PATCH',body:{roomId:11,status:'completed',updatedAt:latest.updatedAt}})).status,200);
+    assert.equal((await request('/api/projects/project-a/chatask/tasks')).data.tasks[0].status,'completed');
+  });
+  await t.test('duplicate Chatask creation and ambiguous timeouts are never automatically retried',async()=>{
+    const operationId=randomUUID(), body={roomId:11,description:'Nova tarefa sintética',operationId};
+    assert.equal((await request('/api/projects/project-a/chatask/tasks',{method:'POST',body})).data.created,true);
+    assert.equal((await request('/api/projects/project-a/chatask/tasks',{method:'POST',body})).status,409);
+    assert.equal((await request('/api/projects/project-a/chatask/tasks')).data.tasks.length,2);
+    const uncertain={...body,operationId:randomUUID(),description:'simulate-timeout'};
+    assert.equal((await request('/api/projects/project-a/chatask/tasks',{method:'POST',body:uncertain})).status,502);
+    assert.equal((await request('/api/projects/project-a/chatask/tasks',{method:'POST',body:uncertain})).status,409);
+    const [[operation]]=await admin.execute('SELECT state FROM chatask_operations WHERE id=?',[uncertain.operationId]);assert.equal(operation.state,'uncertain');
+  });
+  await t.test('Chatask disconnect removes only this session connection and never the project room',async()=>{
+    assert.equal((await request('/api/chatask/connection',{method:'DELETE',body:{}})).status,200);
+    assert.equal((await request('/api/chatask/connection')).data.connected,false);
+    assert.equal((await request('/api/projects/project-a/chatask')).data.room.id,11);
+    assert.equal((await request('/api/chatask/connection',{user:'owner-b'})).data.connected,true);
+  });
   await t.test('anonymous and unrelated users cannot read search or tasks', async () => {
     for (const path of paths) {
       assert.equal((await request(path, { user: '' })).status, 401);
@@ -177,7 +239,7 @@ test('PR #1: TiDB migration, authorization and regression', { skip: !target, tim
   });
   await t.test('new routes do not alter existing business records or user passwords', async () => {
     const after=await fingerprints(); delete after.sessions;
-    const expected={...before};delete expected.sessions;
+    const expected={...taskBaseline};delete expected.sessions;
     assert.deepEqual(after,expected);
   });
   await t.test('updated mailer generates the existing invitation format locally without sending email', async () => {
