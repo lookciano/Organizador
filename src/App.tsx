@@ -900,7 +900,7 @@ export function SecondBrainView({ projectId, onOpenSource }: { projectId: string
           </section>
         </article>;
       })}
-      {analysis.pending && analysis.job && <div className="knowledge-turn"><div className="knowledge-user"><small>VOCÊ</small><p>{analysis.job.question}</p></div><AnalysisProgress progress={analysis.job.progress} paused={analysis.job.state==='paused'} onResume={()=>void analysis.resume()} onCancel={()=>void analysis.cancel()}/></div>}
+      {analysis.pending && analysis.job && <div className="knowledge-turn"><div className="knowledge-user"><small>VOCÊ</small><p>{analysis.job.question}</p></div><AnalysisProgress progress={analysis.job.progress} paused={analysis.job.state==='paused'} onResume={()=>void analysis.resume()} onStaged={()=>void analysis.resume('staged')} onCancel={()=>void analysis.cancel()}/></div>}
       {analysis.loading && <p role="status">Preparando a consulta…</p>}
     </div>
     <section className="panel knowledge-question knowledge-composer">

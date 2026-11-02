@@ -186,6 +186,14 @@ async function advance(row,token,session) {
     await db().execute('UPDATE knowledge_analyses SET state=?,progress_json=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=? AND state=? AND lease_token=?',['paused',JSON.stringify(p),now(),row.id,'working',token]).catch(()=>{});
   }finally{clearInterval(heartbeat);active.delete(row.id);}
 }
+export function stagedContinuation(progress) {
+  if (progress?.phase !== 'answer_direct') return null;
+  const next = { ...progress, directChecked: true };
+  delete next.error;
+  next.phase = Array.isArray(next.supportPending) && next.supportPending.length ? 'context' : 'review';
+  next.notice = 'A resposta direta não coube nesta tentativa; continuando a leitura em etapas.';
+  return next;
+}
 export function registerAnalysisRoutes(app,requireUser,membership,run,readCookie) {
   const guard=[requireUser,membership];
   const owned=async req=>{const [[row]]=await db().execute('SELECT * FROM knowledge_analyses WHERE id=? AND project_id=? AND user_id=?',[req.params.analysisId,req.params.projectId,req.user.id]);return row;};
@@ -214,10 +222,22 @@ export function registerAnalysisRoutes(app,requireUser,membership,run,readCookie
     const row=await owned(req);if(!row)return res.status(404).json({error:'Análise não encontrada.'});
     if(['complete','cancelled'].includes(row.state))return res.json(publicAnalysis(row));
     if(active.has(row.id)||active.size>=3)return res.status(202).json(publicAnalysis(row));
+    // A resposta direta que não coube pode seguir pela leitura em etapas em vez de repetir a mesma tentativa lenta.
+    let staged=null;
+    if(row.state==='paused'&&req.body?.mode==='staged'){
+      const next=stagedContinuation(json(row.progress_json));
+      if(next)staged=JSON.stringify(next);
+    }
     const token=randomUUID();
-    const [claim]=await db().execute("UPDATE knowledge_analyses SET state='working',lease_token=?,lease_until=?,updated_at=? WHERE id=? AND (state IN ('ready','paused') OR (state='working' AND lease_until<?))",[token,leaseEnd(),now(),row.id,now()]);
-    if(claim.affectedRows)void advance(row,token,readCookie(req,'organizador_session'));
-    res.status(202).json({...publicAnalysis(row),state:claim.affectedRows?'working':publicAnalysis(row).state});
+    const [claim]=staged
+      ?await db().execute("UPDATE knowledge_analyses SET state='working',progress_json=?,lease_token=?,lease_until=?,updated_at=? WHERE id=? AND state='paused'",[staged,token,leaseEnd(),now(),row.id])
+      :await db().execute("UPDATE knowledge_analyses SET state='working',lease_token=?,lease_until=?,updated_at=? WHERE id=? AND (state IN ('ready','paused') OR (state='working' AND lease_until<?))",[token,leaseEnd(),now(),row.id,now()]);
+    if(claim.affectedRows){
+      const [[fresh]]=await db().execute('SELECT * FROM knowledge_analyses WHERE id=?',[row.id]);
+      void advance(fresh||row,token,readCookie(req,'organizador_session'));
+      return res.status(202).json(publicAnalysis(fresh||row));
+    }
+    res.status(202).json(publicAnalysis(row));
   }));
   app.post(`${apiPath}/:analysisId/cancel`,...guard,run(async(req,res)=>{
     const row=await owned(req);if(!row)return res.status(404).json({error:'Análise não encontrada.'});
