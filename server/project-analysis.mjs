@@ -26,7 +26,7 @@ export function topicPaths(nodes) {
   }));
 }
 // The transaction is used only for the database snapshot, never held during LLM calls.
-export async function loadProjectCorpus(projectId, database, {originals=false} = {}) {
+export async function loadProjectCorpus(projectId, database, {originals=false, history=false} = {}) {
   const docs=[],issues=[],counts={};
   const add=(kind,row,body,extra={})=>{
     counts[kind]=(counts[kind]||0)+1;
@@ -37,28 +37,32 @@ export async function loadProjectCorpus(projectId, database, {originals=false} =
   add('projeto',{...project,title:project.name},project.description || 'Projeto sem descrição adicional.');
   const nodes=await readAllPages(database,'SELECT id,parent_id,title,sort_order,archived,created_at FROM structure_nodes WHERE project_id=? AND id>? ORDER BY id LIMIT ?',projectId);
   const paths=topicPaths(nodes);
-  for(const row of nodes)add('estrutura',row,`Caminho: ${paths.get(row.id)}\nOrdem: ${row.sort_order}\nSituação: ${row.archived?'arquivado, referência histórica':'ativo'}`,{node_id:row.id});
-  const context=await readAllPages(database,'SELECT id,title,body,extracted_text,archived,file_name,OCTET_LENGTH(file_data) AS file_bytes,created_at FROM project_context_entries WHERE project_id=? AND id>? ORDER BY id LIMIT ?',projectId);
+  const activeNodes=nodes.filter(n=>!n.archived);
+  if(activeNodes.length)add('estrutura',{id:projectId,title:'Estrutura atual do projeto'},activeNodes.map(n=>paths.get(n.id)).join('\n'));
+  counts.estrutura=activeNodes.length;
+  const context=await readAllPages(database,'SELECT id,title,body,extracted_text,archived,file_name,OCTET_LENGTH(file_data) AS file_bytes,created_at FROM project_context_entries WHERE project_id=? AND archived=0 AND id>? ORDER BY id LIMIT ?',projectId);
   for(const row of context){
     add('contexto',row,`Situação: ${row.archived?'contexto arquivado, não é orientação atual':'contexto ativo'}\n${[row.body,row.extracted_text].filter(Boolean).join('\n\n')}`);
     if(row.file_bytes && !text(row.extracted_text).trim())issues.push({kind:'contexto',id:row.id,title:row.title,message:'Anexo de contexto sem texto extraído disponível.'});
   }
-  const items=await readAllPages(database,'SELECT id,node_id,title,summary,location,discipline,supplier,responsible,status,due_date,attention,latest_source_id,updated_at FROM items WHERE project_id=? AND id>? ORDER BY id LIMIT ?',projectId);
-  const itemMap=new Map(items.map(i=>[i.id,i]));
-  for(const row of items)add('assunto',row,`Tópico: ${paths.get(row.node_id)||'Sem tópico confirmado'}\nEstado atual: ${row.summary}\nLocal: ${row.location}\nDisciplina: ${row.discipline}\nFornecedor: ${row.supplier}\nResponsável: ${row.responsible||'não informado'}\nStatus: ${row.status}\nPrazo registrado: ${row.due_date||'não informado'}\nPonto de atenção: ${row.attention?'sim':'não'}`,{item_id:row.id,node_id:row.node_id});
-  const updates=await readAllPages(database,'SELECT u.id,u.item_id,u.source_id,u.summary,u.evidence,u.previous_status,u.new_status,u.created_at FROM item_updates u JOIN items i ON i.id=u.item_id WHERE i.project_id=? AND u.id>? ORDER BY u.id LIMIT ?',projectId);
-  for(const row of updates){const item=itemMap.get(row.item_id);add('historico',{...row,title:`Histórico — ${item?.title||'Assunto'}`},`Tópico: ${paths.get(item?.node_id)||'Sem tópico confirmado'}\nLocal: ${item?.location||''}\nRegistro histórico: ${row.summary}\nEvidência: ${row.evidence}\nStatus anterior: ${row.previous_status||''}\nStatus na atualização: ${row.new_status}`,{item_id:row.item_id,node_id:item?.node_id});}
   for(const [table,kind] of [['topic_summaries','sintese'],['topic_executive_summaries','resumo']]) {
-    const rows=await readAllPages(database,`SELECT s.node_id,s.summary,${kind==='sintese'?'s.important_change,':''}s.analysis_status,s.generated_at,n.title,n.archived FROM ${table} s JOIN structure_nodes n ON n.id=s.node_id AND n.project_id=s.project_id WHERE s.project_id=? AND s.node_id>? ORDER BY s.node_id LIMIT ?`,projectId,'node_id');
+    const rows=await readAllPages(database,`SELECT s.node_id,s.summary,${kind==='sintese'?'s.important_change,':''}s.analysis_status,s.generated_at,n.title,n.archived FROM ${table} s JOIN structure_nodes n ON n.id=s.node_id AND n.project_id=s.project_id WHERE s.project_id=? AND n.archived=0 AND s.node_id>? ORDER BY s.node_id LIMIT ?`,projectId,'node_id');
     for(const row of rows){
       if(text(row.summary).trim())add(kind,{...row,title:paths.get(row.node_id)||row.title},`Tópico ${row.archived?'arquivado, conteúdo histórico':'ativo'}\n${row.summary}${row.important_change?'\nMudança relevante: '+row.important_change:''}`,{node_id:row.node_id});
       if(row.analysis_status!=='completed' || !text(row.summary).trim())issues.push({kind,id:row.node_id,title:paths.get(row.node_id)||row.title,message:row.summary?'Última versão salva; atualização ainda não concluída.':'Síntese ou resumo ainda sem conteúdo gerado.'});
     }
   }
-  const sources=await readAllPages(database,'SELECT id,title,body,content_type,file_name,OCTET_LENGTH(file_data) AS file_bytes,analysis_status,created_at FROM sources WHERE project_id=? AND id>? ORDER BY id LIMIT ?',projectId);
-  const compiledIds=new Set([...items.map(i=>i.latest_source_id),...updates.map(u=>u.source_id)].filter(Boolean));
+  if(history){
+    const items=await readAllPages(database,'SELECT id,node_id,title,summary,location,discipline,supplier,responsible,status,due_date,attention,latest_source_id,updated_at FROM items WHERE project_id=? AND id>? ORDER BY id LIMIT ?',projectId);
+    const itemMap=new Map(items.map(i=>[i.id,i]));
+    for(const row of items)add('assunto',row,`Tópico: ${paths.get(row.node_id)||'Sem tópico confirmado'}\nEstado atual: ${row.summary}\nLocal: ${row.location}\nDisciplina: ${row.discipline}\nFornecedor: ${row.supplier}\nResponsável: ${row.responsible||'não informado'}\nStatus: ${row.status}\nPrazo registrado: ${row.due_date||'não informado'}\nPonto de atenção: ${row.attention?'sim':'não'}`,{item_id:row.id,node_id:row.node_id});
+    const updates=await readAllPages(database,'SELECT u.id,u.item_id,u.source_id,u.summary,u.evidence,u.previous_status,u.new_status,u.created_at FROM item_updates u JOIN items i ON i.id=u.item_id WHERE i.project_id=? AND u.id>? ORDER BY u.id LIMIT ?',projectId);
+    for(const row of updates){const item=itemMap.get(row.item_id);add('historico',{...row,title:`Histórico — ${item?.title||'Assunto'}`},`Tópico: ${paths.get(item?.node_id)||'Sem tópico confirmado'}\nLocal: ${item?.location||''}\nRegistro histórico: ${row.summary}\nEvidência: ${row.evidence}\nStatus anterior: ${row.previous_status||''}\nStatus na atualização: ${row.new_status}`,{item_id:row.item_id,node_id:item?.node_id});}
+  }
+  // Read only source status metadata unless the user requested original documents.
+  const sources=await readAllPages(database,`SELECT id,title,${originals?'body,content_type,file_name,OCTET_LENGTH(file_data) AS file_bytes,':''}analysis_status,created_at FROM sources WHERE project_id=? AND id>? ORDER BY id LIMIT ?`,projectId);
   for(const row of sources){
-    if(row.analysis_status!=='completed' || !compiledIds.has(row.id))issues.push({kind:'fonte',id:row.id,title:row.title,message:'Documento com processamento pendente ou sem assunto vinculado confirmado; confira a organização.'});
+    if(row.analysis_status!=='completed')issues.push({kind:'fonte',id:row.id,title:row.title,message:'Documento ainda não processado; suas informações podem não estar no Relatório vivo.'});
     if(originals){
       let extracted='';
       if(row.file_bytes){
@@ -69,7 +73,13 @@ export async function loadProjectCorpus(projectId, database, {originals=false} =
       add('fonte',row,[row.body,extracted].filter(Boolean).join('\n\n'));
     }
   }
-  return {documents:docs,coverage:{snapshot_at:stamp(),scope:originals?'compiled_and_originals':'compiled',counts,original_documents:sources.length,originals_included:originals,issues,document_count:docs.length}};
+  const [itemDates]=await database.execute('SELECT node_id,MAX(updated_at) AS latest_update FROM items WHERE project_id=? GROUP BY node_id',[projectId]);
+  const byNode=new Map(nodes.map(n=>[n.id,n])),latest=new Map();
+  for(const item of itemDates){let id=item.node_id;const seen=new Set();while(id&&!seen.has(id)){seen.add(id);if(!latest.has(id)||latest.get(id)<item.latest_update)latest.set(id,item.latest_update);id=byNode.get(id)?.parent_id;}}
+  for(const d of docs.filter(d=>['sintese','resumo'].includes(d.kind)))if(latest.get(d.node_id)>d.created_at)issues.push({kind:d.kind,id:d.id,title:d.title,message:'Há registros atualizados após esta síntese ou resumo; a resposta usa a versão salva.'});
+  for(const n of activeNodes.filter(n=>!n.parent_id&&latest.has(n.id)))if(!docs.some(d=>d.kind==='sintese'&&d.node_id===n.id))issues.push({kind:'sintese',id:n.id,title:n.title,message:'Este tópico tem registros, mas ainda não possui síntese salva.'});
+  if(!counts.sintese&&!counts.resumo)issues.push({kind:'relatorio',id:projectId,title:project.name,message:'Não há sínteses ou resumos ativos disponíveis. Gere o Relatório vivo para fundamentar a resposta.'});
+  return {documents:docs,coverage:{snapshot_at:stamp(),scope:'living_report',history_included:history,counts,original_documents:sources.length,originals_included:originals,issues,document_count:docs.length}};
 }
 
 export function makeChunks(documents, maxChars=5000) {

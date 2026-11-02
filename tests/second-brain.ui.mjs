@@ -160,3 +160,8 @@ test('coverage and every candidate remain available beyond the first visible pag
  await ask('Compare todas as sínteses');assert.equal(document.querySelectorAll('.analysis-candidate').length,20);assert.match(document.body.textContent,/Comparação incompleta/);assert.match(document.body.textContent,/500 de 500/);assert.match(document.body.textContent,/Sínteses: 305/);
  await act(()=>[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Mostrar mais propostas')).click());assert.equal(document.querySelectorAll('.analysis-candidate').length,25);assert.match(document.body.textContent,/Proposta 25/);assert.doesNotMatch(document.body.textContent,/Possível nova tarefa/);
 });
+
+test('report-only coverage explains the scope without claiming a Chatask failure',async t=>{
+ await mount(t,async()=>reply({status:'answered',paragraphs:[],sources:[],warnings:[],coverage:{scope:'living_report',snapshot_at:'2026-11-01T12:00:00Z',counts:{sintese:20,resumo:5,contexto:2},issues:[],task_status:'not_requested',task_count:null,task_room:'',tasks_read_at:'',history_included:false,originals_included:false,chunks_read:30,chunks_total:30}}));
+ await ask('Faça uma lista baseada nas sínteses');assert.match(document.body.textContent,/todas as sínteses e resumos ativos salvos/);assert.match(document.body.textContent,/considerando a estrutura e o contexto/);assert.match(document.body.textContent,/tarefas da sala não foram necessárias/);assert.doesNotMatch(document.body.textContent,/Tarefas da sala indisponíveis|Conecte sua conta/);
+});

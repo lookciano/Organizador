@@ -13,7 +13,7 @@ const active=new Set();
 export function publicAnalysis(row) {
   const p=json(row.progress_json);
   return {id:row.id,question:row.question,state:row.state==='working'&&row.lease_until<now()?'ready':row.state,
-    progress:{phase:p.phase,completed:p.completed||0,total:p.total||0,comparisons_completed:p.compareIndex||0,comparisons_total:p.compareTotal||0,error:p.error||'',coverage:p.coverage||null},
+    progress:{phase:p.phase,completed:p.completed||0,total:p.total||0,comparisons_completed:p.compareIndex||0,comparisons_total:p.compareTotal||0,error:p.error||'',notice:p.notice||'',coverage:p.coverage||null},
     result:row.result_json?json(row.result_json):null};
 }
 async function checkpoint(id,token,progress,changes=async()=>{},result=null) {
@@ -34,40 +34,56 @@ async function sourcesFor(id) {
 async function performStep(row,token,session) {
   const p=json(row.progress_json),history=json(row.history_json),options=json(row.options_json);
   delete p.error;
+  // Replan unfinished older jobs on their next advance. Completed evidence is retained.
+  if(p.version!==2){await checkpoint(row.id,token,{version:2,phase:'plan',notice:'A análise foi adaptada para priorizar as sínteses e os resumos atuais, considerando o contexto.'});return;}
+  if(p.phase==='plan') {
+    p.plan=await planProjectAnalysis(row.question,history);p.phase='prepare';p.reviewSize=32000;
+    await checkpoint(row.id,token,p);return;
+  }
   if(p.phase==='prepare') {
     let corpus;const connection=await db().getConnection();
-    try{await connection.beginTransaction();corpus=await loadProjectCorpus(row.project_id,connection,options);await connection.commit();}
+    try{await connection.beginTransaction();corpus=await loadProjectCorpus(row.project_id,connection,{originals:options.originals||p.plan.originals,history:p.plan.history});await connection.commit();}
     catch(error){await connection.rollback();throw error;}finally{connection.release();}
     let taskSnapshot={tasks:[],available:false};
-    try{taskSnapshot={...await readChataskProjectTasks(row.project_id,row.user_id,session),available:true};}
-    catch(error){corpus.coverage.task_message=error.status?error.message:'Não foi possível consultar as tarefas da sala.';}
-    const chunks=makeChunks([...corpus.documents,...(taskSnapshot.available?taskDocuments(taskSnapshot):[])]);
-    p.coverage={...corpus.coverage,task_status:taskSnapshot.available?'read':'unavailable',task_count:taskSnapshot.available?taskSnapshot.tasks.length:null,task_room:taskSnapshot.room?.name||'',tasks_read_at:taskSnapshot.read_at||'',revision:revisionOf(chunks)};
-    p.tasks=taskSnapshot;p.total=chunks.length;p.completed=0;p.phase='plan';
+    const needsTasks=p.plan.needs_tasks||p.plan.tasks==='compare';
+    if(needsTasks){
+      try{taskSnapshot={...await readChataskProjectTasks(row.project_id,row.user_id,session),available:true};}
+      catch(error){corpus.coverage.task_message=error.status?error.message:'Não foi possível consultar as tarefas da sala.';}
+    }
+    // Comparisons already read every room task; do not read that same list twice.
+    const chunks=makeChunks([...corpus.documents,...(taskSnapshot.available&&p.plan.tasks!=='compare'?taskDocuments(taskSnapshot):[])]);
+    p.coverage={...corpus.coverage,task_status:!needsTasks?'not_requested':taskSnapshot.available?'read':'unavailable',task_count:taskSnapshot.available?taskSnapshot.tasks.length:null,task_room:taskSnapshot.room?.name||'',tasks_read_at:taskSnapshot.read_at||'',revision:revisionOf(chunks)};
+    p.supportPending=chunks.filter(c=>['projeto','estrutura','contexto'].includes(c.kind)).map(c=>c.number);p.supportNotes=[];
+    p.tasks=taskSnapshot;p.total=chunks.length;p.completed=0;p.phase='context';
     await checkpoint(row.id,token,p,async sql=>{
       await sql.execute('DELETE FROM knowledge_analysis_chunks WHERE analysis_id=?',[row.id]);
       for(const c of chunks){const {text,...meta}=c;await sql.execute('INSERT INTO knowledge_analysis_chunks (analysis_id,sequence_number,source_json,body) VALUES (?,?,?,?)',[row.id,c.number,JSON.stringify(meta),text]);}
     });return;
   }
-  if(p.phase==='plan') {
-    p.plan=await planProjectAnalysis(row.question,history);p.phase='review';p.reviewSize=16000;
-    await checkpoint(row.id,token,p);return;
-  }
-  if(p.phase==='review') {
-    const [pending]=await db().execute('SELECT sequence_number,source_json,body FROM knowledge_analysis_chunks WHERE analysis_id=? AND reviewed=0 ORDER BY sequence_number LIMIT 12',[row.id]);
-    if(!pending.length){p.phase='gather';await checkpoint(row.id,token,p);return;}
+  if(p.phase==='review'||p.phase==='context') {
+    const isContext=p.phase==='context';
+    if(isContext&&!p.supportPending.length){p.phase='support_reduce';await checkpoint(row.id,token,p);return;}
+    const scope=isContext?` AND sequence_number IN (${p.supportPending.map(()=>'?').join(',')})`:'';
+    const [pending]=await db().execute(`SELECT sequence_number,source_json,body FROM knowledge_analysis_chunks WHERE analysis_id=? AND reviewed=0${scope} ORDER BY sequence_number LIMIT 64`,[row.id,...(isContext?p.supportPending:[])]);
+    if(!pending.length){p.phase=isContext?'support_reduce':'gather';await checkpoint(row.id,token,p);return;}
     const chunks=batchBySize(pending.map(r=>({...json(r.source_json),number:r.sequence_number,text:r.body})),p.reviewSize)[0];
-    const value=await reviewProjectBatch(p.plan,chunks);
+    const value=await reviewProjectBatch(p.plan,chunks,isContext?[]:p.supportNotes);
     if(value.complete!==true){
       if(chunks.length>1){p.reviewSize=Math.max(1000,Math.floor(p.reviewSize/2));await checkpoint(row.id,token,p);return;}
       const c=chunks[0];if(c.text.length<=1000)throw new Error('Incomplete single passage');
       const middle=Math.floor(c.text.length/2),next=p.total+1,{text,...meta}=c;p.total++;
+      if(isContext)p.supportPending.push(next);
       await checkpoint(row.id,token,p,async sql=>{
         await sql.execute('UPDATE knowledge_analysis_chunks SET body=? WHERE analysis_id=? AND sequence_number=?',[text.slice(0,middle),row.id,c.number]);
         await sql.execute('INSERT INTO knowledge_analysis_chunks (analysis_id,sequence_number,source_json,body) VALUES (?,?,?,?)',[row.id,next,JSON.stringify({...meta,number:next}),text.slice(middle)]);
       });return;
     }
-    const findings=validateFindings(value,chunks.map(c=>c.number));
+    const findings=validateFindings(value,[...chunks.map(c=>c.number),...(!isContext?p.supportNotes.flatMap(f=>f.source_numbers):[])]);
+    if(isContext){findings.candidates=[];p.supportNotes.push(...findings.findings);p.supportPending=p.supportPending.filter(n=>!chunks.some(c=>c.number===n));}
+    else {
+      const evidenceIds=new Set(chunks.filter(c=>!['projeto','estrutura','contexto','tarefa'].includes(c.kind)).map(c=>c.number));
+      if(findings.candidates.some(c=>!c.source_numbers.some(n=>evidenceIds.has(n))))throw new Error('Proposta sem evidência válida.');
+    }
     p.completed+=chunks.length;
     await checkpoint(row.id,token,p,async sql=>{
       for(let i=0;i<chunks.length;i++)await sql.execute('UPDATE knowledge_analysis_chunks SET reviewed=1,findings_json=? WHERE analysis_id=? AND sequence_number=?',[i===0?JSON.stringify(findings):null,row.id,chunks[i].number]);
@@ -90,16 +106,17 @@ async function performStep(row,token,session) {
     if(p.compareIndex===p.compareTotal)p.phase='reduce';
     await checkpoint(row.id,token,p);return;
   }
-  if(p.phase==='reduce') {
-    if(JSON.stringify(p.findings).length<=22000){p.phase='answer';await checkpoint(row.id,token,p);return;}
-    if(!p.reduction){p.reduction={batches:batchBySize(p.findings,16000),notes:[],index:0,before:JSON.stringify(p.findings).length};}
-    const r=p.reduction,input=r.batches[r.index],output=await reduceProjectFindings(p.plan,input);
+  if(p.phase==='reduce'||p.phase==='support_reduce') {
+    const support=p.phase==='support_reduce',key=support?'supportNotes':'findings';
+    if(JSON.stringify(p[key]).length<=(support?16000:22000)){p.phase=support?'review':'answer';await checkpoint(row.id,token,p);return;}
+    if(!p.reduction){p.reduction={batches:batchBySize(p[key],16000),notes:[],index:0,before:JSON.stringify(p[key]).length};}
+    const r=p.reduction,input=r.batches[r.index],output=await reduceProjectFindings(support?{...p.plan,objective:'Preserve as relações, definições e orientações do contexto e da estrutura para interpretar as sínteses. '+p.plan.objective}:p.plan,input);
     const checked=validateFindings({complete:true,findings:output.findings,candidates:[]},input.flatMap(f=>f.source_numbers));
     if(!checked.findings.length)throw new Error('Reduction discarded findings');
     r.notes.push(...checked.findings);r.index++;
     if(r.index===r.batches.length){
       if(JSON.stringify(r.notes).length>=r.before)throw new Error('Reduction did not converge');
-      p.findings=r.notes;delete p.reduction;
+      p[key]=r.notes;delete p.reduction;
     }
     await checkpoint(row.id,token,p);return;
   }
@@ -114,7 +131,7 @@ async function performStep(row,token,session) {
     const cited=new Set([...blocks.flatMap(b=>b.source_numbers),...comparisons.flatMap(c=>c.source_numbers)]);
     const warnings=[];
     if(p.coverage.issues.length)warnings.push('Há conteúdo pendente ou sem leitura confirmada. Confira a cobertura abaixo.');
-    if(p.plan.tasks==='compare'&&!coverage.comparison_complete)warnings.push(p.coverage.task_message||'A lista da sala não pôde ser consultada. Nenhuma proposta foi classificada como nova.');
+    if((p.plan.needs_tasks||p.plan.tasks==='compare')&&!p.tasks.available)warnings.push(p.coverage.task_message||'A lista da sala não pôde ser consultada. A resposta não confirma as tarefas existentes.');
     if(comparisons.length)warnings.push('Propostas semelhantes podem precisar de consolidação. Confira datas e evidências antes de criar ou atualizar tarefas.');
     const result={status:'answered',blocks,paragraphs:[],sources:sources.filter(s=>cited.has(s.number)),warnings,coverage,comparisons,task_mode:p.plan.tasks,...(!blocks.length?{message:'A leitura terminou sem evidência suficiente para responder a esse pedido. Confira as pendências de organização e, se necessário, inclua os documentos originais em uma nova consulta.'}:{})};
     // Completed jobs retain evidence in the chunk table, not duplicate model working buffers.
@@ -122,12 +139,14 @@ async function performStep(row,token,session) {
   }
 }
 async function advance(row,token,session) {
+  const started=Date.now(),phase=json(row.progress_json).phase;
   active.add(row.id);
   const heartbeat=setInterval(()=>{db().execute('UPDATE knowledge_analyses SET lease_until=? WHERE id=? AND state=? AND lease_token=?',[leaseEnd(),row.id,'working',token]).catch(()=>{});},30000);
   heartbeat.unref();
-  try{await performStep(row,token,session);}catch(error){
+  try{await performStep(row,token,session);console.info('project_analysis_step:',phase,'duration_ms',Date.now()-started);}catch(error){
     // Provider responses may contain private text: log categories only.
-    console.warn('project_analysis_paused:', json(row.progress_json).phase, /^[A-Z_0-9]+$/.test(error.code||'')?error.code:'step_not_completed');
+    const category=/^[A-Z_0-9]+$/.test(error.code||'')?error.code:error.name==='TimeoutError'?'PROVIDER_TIMEOUT':/Falha na análise/.test(error.message)?'PROVIDER_ERROR':/IA.*(JSON|interrompeu|concluiu)/.test(error.message)?'PROVIDER_INCOMPLETE':'VALIDATION_OR_STEP_ERROR';
+    console.warn('project_analysis_paused:',phase,category,'duration_ms',Date.now()-started);
     const p=json(row.progress_json);p.error='Esta etapa não foi concluída. O progresso anterior foi salvo; tente retomar.';
     await db().execute('UPDATE knowledge_analyses SET state=?,progress_json=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=? AND state=? AND lease_token=?',['paused',JSON.stringify(p),now(),row.id,'working',token]).catch(()=>{});
   }finally{clearInterval(heartbeat);active.delete(row.id);}
@@ -151,8 +170,8 @@ export function registerAnalysisRoutes(app,requireUser,membership,run,readCookie
       const [[pending]]=await sql.execute("SELECT id FROM knowledge_analyses WHERE user_id=? AND project_id=? AND state IN ('ready','working','paused') LIMIT 1",[req.user.id,req.params.projectId]);
       if(pending){await sql.rollback();return res.status(409).json({error:'Retome ou encerre sua análise anterior antes de iniciar outra.'});}
       const stamp=now();
-      await sql.execute('INSERT INTO knowledge_analyses (id,project_id,user_id,state,question,history_json,options_json,progress_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',[id,req.params.projectId,req.user.id,'ready',question.trim(),JSON.stringify(history),JSON.stringify({originals:req.body.originals===true}),JSON.stringify({phase:'prepare'}),stamp,stamp]);
-      await sql.commit();res.status(201).json({id,question:question.trim(),state:'ready',progress:{phase:'prepare',completed:0,total:0},result:null});
+      await sql.execute('INSERT INTO knowledge_analyses (id,project_id,user_id,state,question,history_json,options_json,progress_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',[id,req.params.projectId,req.user.id,'ready',question.trim(),JSON.stringify(history),JSON.stringify({originals:req.body.originals===true}),JSON.stringify({version:2,phase:'plan'}),stamp,stamp]);
+      await sql.commit();res.status(201).json({id,question:question.trim(),state:'ready',progress:{phase:'plan',completed:0,total:0},result:null});
     }catch(error){await sql.rollback();throw error;}finally{sql.release();}
   }));
   app.get(`${apiPath}/:analysisId`,...guard,run(async(req,res)=>{const row=await owned(req);if(!row)return res.status(404).json({error:'Análise não encontrada.'});res.json(publicAnalysis(row));}));

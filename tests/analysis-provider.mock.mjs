@@ -8,8 +8,9 @@ globalThis.fetch=async(url,options={})=>{
  const input=JSON.parse(body.input[1].content[0].text);
  const refs=input.chunks?.map(c=>c.number)||[];
  let output;
- if(name==='project_analysis_plan')output={tasks:'compare',objective:input.question};
+ if(name==='project_analysis_plan')output={tasks:/compar/i.test(input.question)?'compare':/tarefas/i.test(input.question)?'list':'none',objective:input.question,needs_tasks:/compar|tarefas cadastradas/i.test(input.question),history:/histórico detalhado/i.test(input.question),originals:/documentos originais/i.test(input.question)};
  else if(name==='project_analysis_review'){
+  if(input.chunks.some(c=>c.kind==='sintese')&&!input.support.some(f=>f.text.includes('Contexto sintético')))throw new Error('Summary review missing context');
   if(input.plan.objective.includes('pausar')&&!failed){failed=true;return new Response('{}',{status:400});}
   output={complete:true,findings:input.chunks.map(c=>({text:c.kind==='sintese'?'Revisão do TASK-LAST pendente.':'Contexto sintético do projeto A.',source_numbers:[c.number]})),candidates:input.chunks.filter(c=>c.kind==='sintese').map(c=>({action:'Conferir TASK-LAST',location:'Ceará-Mirim',equipment:'Cubículo',responsible:'',due_date:'',source_numbers:[c.number]}))};
  }
