@@ -38,12 +38,15 @@ async function performStep(row,token,session) {
   if(p.version!==2){await checkpoint(row.id,token,{version:2,phase:'plan',notice:'A análise foi adaptada para priorizar as sínteses e os resumos atuais, considerando o contexto.'});return;}
   if(p.phase==='plan') {
     p.plan=await planProjectAnalysis(row.question,history);p.phase='prepare';p.reviewSize=32000;
+    console.info('project_analysis_scope:',JSON.stringify({tasks:p.plan.tasks,needs_tasks:p.plan.needs_tasks,history:p.plan.history,originals:options.originals||p.plan.originals}));
     await checkpoint(row.id,token,p);return;
   }
   if(p.phase==='prepare') {
+    const started=Date.now();
     let corpus;const connection=await db().getConnection();
     try{await connection.beginTransaction();corpus=await loadProjectCorpus(row.project_id,connection,{originals:options.originals||p.plan.originals,history:p.plan.history});await connection.commit();}
     catch(error){await connection.rollback();throw error;}finally{connection.release();}
+    console.info('project_analysis_corpus:', 'duration_ms',Date.now()-started,'documents',corpus.documents.length,'characters',corpus.documents.reduce((n,d)=>n+d.text.length,0));
     let taskSnapshot={tasks:[],available:false};
     const needsTasks=p.plan.needs_tasks||p.plan.tasks==='compare';
     if(needsTasks){
@@ -57,7 +60,10 @@ async function performStep(row,token,session) {
     p.tasks=taskSnapshot;p.total=chunks.length;p.completed=0;p.phase='context';
     await checkpoint(row.id,token,p,async sql=>{
       await sql.execute('DELETE FROM knowledge_analysis_chunks WHERE analysis_id=?',[row.id]);
-      for(const c of chunks){const {text,...meta}=c;await sql.execute('INSERT INTO knowledge_analysis_chunks (analysis_id,sequence_number,source_json,body) VALUES (?,?,?,?)',[row.id,c.number,JSON.stringify(meta),text]);}
+      for(let start=0;start<chunks.length;start+=50){
+        const batch=chunks.slice(start,start+50);
+        await sql.execute(`INSERT INTO knowledge_analysis_chunks (analysis_id,sequence_number,source_json,body) VALUES ${batch.map(()=>'(?,?,?,?)').join(',')}`,batch.flatMap(c=>{const {text,...meta}=c;return [row.id,c.number,JSON.stringify(meta),text];}));
+      }
     });return;
   }
   if(p.phase==='review'||p.phase==='context') {
@@ -86,7 +92,8 @@ async function performStep(row,token,session) {
     }
     p.completed+=chunks.length;
     await checkpoint(row.id,token,p,async sql=>{
-      for(let i=0;i<chunks.length;i++)await sql.execute('UPDATE knowledge_analysis_chunks SET reviewed=1,findings_json=? WHERE analysis_id=? AND sequence_number=?',[i===0?JSON.stringify(findings):null,row.id,chunks[i].number]);
+      await sql.execute(`UPDATE knowledge_analysis_chunks SET reviewed=1,findings_json=NULL WHERE analysis_id=? AND sequence_number IN (${chunks.map(()=>'?').join(',')})`,[row.id,...chunks.map(c=>c.number)]);
+      await sql.execute('UPDATE knowledge_analysis_chunks SET findings_json=? WHERE analysis_id=? AND sequence_number=?',[JSON.stringify(findings),row.id,chunks[0].number]);
     });return;
   }
   if(p.phase==='gather') {
