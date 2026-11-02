@@ -170,7 +170,7 @@ export default function App() {
       {error && <div className="alert error" role="alert">{error}<button onClick={() => setError("")}>×</button></div>}
       {notice && <div className="alert success" role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
       {!project || showCreateProject ? <CreateProject key={showCreateProject?"new":"first"} projects={state.projects} currentProjectId={projectId} onCancel={project?()=>setShowCreateProject(false):undefined} onCreated={(id) => chooseProject(id)} setBusy={setBusy} busy={busy} setError={setError} /> : <div className="content">
-        {view === "brain" && project.id === projectId && <SecondBrainView key={projectId} projectId={projectId} onOpenSource={(source) => { const item = items.find(i => i.id === source.item_id); if(item) void openItem(item); else setView(source.kind === "contexto" ? "context" : source.kind === "fonte" ? "sources" : "items"); }} />}
+        {view === "brain" && project.id === projectId && <SecondBrainView key={projectId} projectId={projectId} onOpenSource={(source) => { const item = items.find(i => i.id === source.item_id); if(item) void openItem(item); else setView(source.node_id ? "overview" : source.kind === "contexto" ? "context" : source.kind === "fonte" ? "sources" : "items"); }} />}
         {view === "tasks" && project.id === projectId && <TasksView key={projectId} projectId={projectId} owner={project.role === "owner"} />}
         {view === "overview" && <LivingReportView project={project} items={items} nodes={nodes} topicSummaries={state.topicSummaries || []} executiveSummaries={state.executiveSummaries || []} syncedAt={syncedAt} onRefresh={() => refresh(projectId)} onOpen={openItem} onCompose={() => { setView("sources"); setComposerFocus((value) => value + 1); }} />}
         {view === "items" && <ItemsView items={items} nodes={nodes} onOpen={openItem} onManual={() => setShowManual(true)} />}
@@ -848,44 +848,71 @@ function ItemDrawer({ item, nodes, updates, projectId, close, onDone, setError }
   return <div className="drawer-backdrop" onMouseDown={close}><aside className="drawer" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={item.title}><button className="close" onClick={close}>×</button><div className="eyebrow">ASSUNTO DO PROJETO</div><h2>{item.title}</h2><Status item={item} /><p className="drawer-summary">{item.summary}</p><section className="latest-update-card"><small>ÚLTIMA ATUALIZAÇÃO · {date(item.latest_update_at || item.updated_at)}</small><p>{item.latest_update || item.summary || "Sem atualização resumida"}</p><span>{item.update_count || 0} registro(s) no histórico{item.latest_update_author ? ` · ${item.latest_update_author}` : ""}</span></section><div className="detail-grid"><div><small>LOCAL</small><strong>{item.location || "Não identificado"}</strong></div><div><small>DISCIPLINA</small><strong>{item.discipline || "Não identificada"}</strong></div><div><small>FONTE MAIS RECENTE</small><strong>{item.source_title || "Registro manual"}</strong></div><div><small>ATUALIZAÇÃO</small><strong>{date(item.latest_update_at || item.updated_at)}</strong></div></div><form className="drawer-form" onSubmit={async (event) => { event.preventDefault(); setBusy(true); try { await post(`/api/projects/${projectId}/items/${item.id}`, { nodeId, status, responsible, supplier, dueDate, note, attention }, "PATCH"); await onDone(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Falha ao atualizar"); } finally { setBusy(false); } }}><h3>Atualizar acompanhamento</h3><div className="form-grid"><label>Tópico<select value={nodeId} onChange={(event) => setNodeId(event.target.value)}><option value="">Aguardando confirmação</option>{categoryOptions(nodes).map((node) => <option key={node.id} value={node.id}>{node.label}</option>)}</select></label><label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}>{Object.entries(statusName).map(([key, value]) => <option key={key} value={key}>{value}</option>)}</select></label><label>Prazo<input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></label><label>Responsável<input value={responsible} onChange={(event) => setResponsible(event.target.value)} /></label><label>Fornecedor<input value={supplier} onChange={(event) => setSupplier(event.target.value)} /></label></div><label>Nota da atualização<textarea rows={2} value={note} onChange={(event) => setNote(event.target.value)} placeholder="O que mudou?" /></label><label className="check-row"><input type="checkbox" checked={attention} onChange={(event) => setAttention(event.target.checked)} />Ponto de atenção</label><button className="button primary" disabled={busy}>{busy ? "Salvando..." : "Salvar atualização"}</button></form><section className="timeline"><h3>Histórico e evidências</h3>{updates.map((update) => <div className="timeline-entry" key={update.id}><span className="timeline-dot" /><small>{date(update.created_at)} · {update.author_email || "Análise automática"}</small><p>{update.summary}</p>{update.evidence && <blockquote>“{update.evidence}”</blockquote>}{update.source_title && <small>Fonte: {update.source_title}</small>}</div>)}{!updates.length && <p className="muted-text">Nenhuma atualização registrada.</p>}</section></aside></div>;
 }
 
-type KnowledgeSource = { number: number; kind: string; id: string; item_id?: string; title: string; text: string; created_at: string; part: number };
-type KnowledgeAnswer = { status: "answered" | "unavailable" | "no_evidence"; paragraphs: { text: string; source_numbers: number[] }[]; sources: KnowledgeSource[]; warnings: string[]; message?: string };
+type KnowledgeSource = { number: number; kind: string; id: string; item_id?: string; node_id?: string; title: string; text: string; created_at: string; part: number };
+type KnowledgeBlock = { type: "paragraph" | "list" | "table"; title: string; text: string; items: string[]; columns: string[]; rows: string[][]; source_numbers: number[] };
+type KnowledgeAnswer = { status: "answered" | "unavailable" | "no_evidence"; blocks?: KnowledgeBlock[]; paragraphs: { text: string; source_numbers: number[] }[]; sources: KnowledgeSource[]; warnings: string[]; message?: string };
+type KnowledgeTurn = { question: string; answer: KnowledgeAnswer };
+const knowledgeText = (answer: KnowledgeAnswer) => answer.blocks?.length ? answer.blocks.map(b=>[b.title,b.text,...b.items.map(x=>`• ${x}`),...(b.columns.length ? [b.columns.join(" | "),...b.rows.map(r=>r.join(" | "))] : []),`Fontes: ${b.source_numbers.map(n=>`[${n}]`).join(" ")}`].filter(Boolean).join("\n")).join("\n\n") : answer.paragraphs.map(p=>p.text).join("\n\n");
 export function SecondBrainView({ projectId, onOpenSource }: { projectId: string; onOpenSource?: (source: KnowledgeSource) => void }) {
   const [question,setQuestion] = useState("");
-  const [answer,setAnswer] = useState<KnowledgeAnswer | null>(null);
+  const [turns,setTurns] = useState<KnowledgeTurn[]>([]);
   const [busy,setBusy] = useState(false);
+  const [pendingQuestion,setPendingQuestion] = useState("");
   const [error,setError] = useState("");
   const requestVersion = useRef(0);
   const pending = useRef(false);
+  const composer = useRef<HTMLTextAreaElement>(null);
   useEffect(() => () => { requestVersion.current++; }, []);
   const ask = async (event: React.FormEvent) => {
     event.preventDefault();
     if(pending.current) return;
+    setError("");
+    const prompt=question.trim();
+    if(prompt.length < 3) {setError("Escreva uma instrução com pelo menos três caracteres.");return;}
     const version = ++requestVersion.current;
-    setAnswer(null);setError("");
-    if(question.trim().length < 3) {setError("Escreva uma pergunta com pelo menos três caracteres.");return;}
-    pending.current=true;setBusy(true);
+    pending.current=true;setBusy(true);setPendingQuestion(prompt);
+    // Context is bounded and never shared between projects. Re-fetch evidence each turn.
+    let chars=0;
+    const history=turns.filter(t=>t.answer.status==='answered').slice(-6).map(t=>({question:t.question,answer:knowledgeText(t.answer).slice(0,12000)})).reverse().filter(t=>{chars+=t.question.length+t.answer.length;return chars<=40000;}).reverse();
     try {
-      const result=await post<KnowledgeAnswer>(`/api/projects/${projectId}/knowledge/ask`,{question:question.trim()});
-      if(version===requestVersion.current) setAnswer(result);
+      const result=await post<KnowledgeAnswer>(`/api/projects/${projectId}/knowledge/ask`,{question:prompt,history});
+      if(version===requestVersion.current) {setTurns(old=>[...old,{question:prompt,answer:result}]);setQuestion("");}
     } catch(cause) {if(version===requestVersion.current) setError(cause instanceof Error ? cause.message : "Não foi possível consultar o projeto.");}
-    finally {if(version===requestVersion.current){pending.current=false;setBusy(false);}}
+    finally {if(version===requestVersion.current){pending.current=false;setBusy(false);setPendingQuestion("");}}
   };
-  const kindName: Record<string,string> = {assunto:"Assunto",historico:"Histórico",fonte:"Documento ou registro",contexto:"Contexto"};
-  return <div className="knowledge-view">
-    <section className="panel knowledge-question"><span className="eyebrow">SEGUNDO CÉREBRO</span><h1>Pergunte ao projeto</h1><p>Faça uma pergunta em suas palavras. A IA consulta os registros e documentos deste projeto e apresenta uma resposta com fontes para você conferir.</p>
-      <form onSubmit={ask}><label htmlFor="knowledge-question">O que você quer saber?</label><textarea id="knowledge-question" maxLength={1000} rows={3} value={question} onChange={e=>setQuestion(e.target.value)} placeholder="Me fale tudo sobre o cubículo de Ceará-Mirim" disabled={busy}/><button className="button primary" disabled={busy} type="submit">{busy?"Consultando registros e preparando resposta…":"Perguntar ao projeto"}</button></form>
-      {busy && <p role="status">Estou procurando evidências e organizando a resposta. Isso pode levar alguns instantes.</p>}
+  const kindName: Record<string,string> = {assunto:"Assunto",historico:"Histórico",fonte:"Documento ou registro",contexto:"Contexto",sintese:"Síntese do Relatório vivo",resumo:"Resumo executivo"};
+  const prompts=["Crie uma lista de tarefas com base nas sínteses, indicando responsáveis e prazos registrados.","Resuma as principais pendências do projeto.","Me fale tudo sobre o cubículo de Ceará-Mirim."];
+  return <div className="knowledge-view conversation-view">
+    <header className="knowledge-heading"><div><span className="eyebrow">SEGUNDO CÉREBRO</span><h1>Converse com o projeto</h1><p>Peça resumos, comparações ou listas de tarefas a partir dos documentos, registros, sínteses e resumos do Relatório vivo.</p></div><button className="button secondary" disabled={busy || !turns.length} onClick={()=>{setTurns([]);setQuestion("");setError("");composer.current?.focus();}}>Nova conversa</button></header>
+    {!turns.length && !busy && <section className="panel knowledge-welcome"><h2>O que vamos organizar?</h2><p>Escreva o que precisa e como quer receber a resposta. Depois, você pode pedir ajustes na mesma conversa.</p><div className="knowledge-suggestions">{prompts.map(p=><button key={p} onClick={()=>{setQuestion(p);composer.current?.focus();}}>{p}</button>)}</div></section>}
+    <div className="knowledge-conversation" aria-label="Conversa com o projeto">
+      {turns.map(({question:prompt,answer},turnIndex)=>{
+        const sourceId=(n:number)=>turnIndex ? `knowledge-source-${turnIndex}-${n}` : `knowledge-source-${n}`;
+        const citations=(numbers:number[])=><span className="knowledge-citations">{numbers.map(n=><a key={n} href={`#${sourceId(n)}`} aria-label={`Conferir fonte ${n}`} onClick={()=>{const element=document.getElementById(sourceId(n));if(element){element.setAttribute("open","");element.closest(".knowledge-evidence")?.setAttribute("open","");}}}>[{n}]</a>)}</span>;
+        return <article className="knowledge-turn" key={turnIndex}>
+          <div className="knowledge-user"><small>VOCÊ</small><p>{prompt}</p></div>
+          <section className="panel knowledge-answer" aria-label="Resposta do projeto">
+            <div className="knowledge-answer-heading"><span className="eyebrow">ASSISTENTE DO PROJETO</span>{answer.status==='answered' && <CopyTextButton label="Copiar resposta" text={knowledgeText(answer)+"\n\n"+answer.sources.map(s=>`[${s.number}] ${s.title} — ${kindName[s.kind] || s.kind}`).join("\n")} />}</div>
+            {answer.message && <p role="status">{answer.message}</p>}
+            {answer.blocks?.length ? answer.blocks.map((b,i)=><div className="knowledge-block" key={i}>
+              {b.title && <h2>{b.title}</h2>}{b.text && <p className="knowledge-paragraph">{b.text}</p>}
+              {b.type==='list' && <ul>{b.items.map((item,j)=><li key={j}>{item}</li>)}</ul>}
+              {b.type==='table' && <div className="knowledge-table" tabIndex={0} role="region" aria-label={b.title || "Tabela da resposta"}><table><thead><tr>{b.columns.map((c,j)=><th key={j} scope="col">{c}</th>)}</tr></thead><tbody>{b.rows.map((row,j)=><tr key={j}>{row.map((cell,k)=><td key={k}>{cell}</td>)}</tr>)}</tbody></table></div>}
+              {citations(b.source_numbers)}
+            </div>) : answer.paragraphs.map((paragraph,i)=><p className="knowledge-paragraph" key={i}>{paragraph.text} {citations(paragraph.source_numbers)}</p>)}
+            {answer.warnings.map(w=><p key={w} className="knowledge-note" role="status">{w}</p>)}
+            {!!answer.sources.length && <details className="knowledge-evidence"><summary>Fontes e trechos consultados ({answer.sources.length})</summary><p className="muted-text">As datas indicam o registro ou a geração da síntese. Confira as evidências antes de decidir.</p>
+              {answer.sources.map(source=><details id={sourceId(source.number)} className="knowledge-source" key={source.number}><summary><strong>[{source.number}] {source.title}</strong><span>{kindName[source.kind] || source.kind} · {source.created_at ? dateTime(source.created_at) : "Data não informada"} · trecho {source.part}</span></summary><p>{source.text}</p>{onOpenSource && <button className="button secondary" onClick={()=>onOpenSource(source)}>{source.item_id?"Abrir assunto e histórico":source.node_id?"Abrir Relatório vivo":source.kind==="contexto"?"Abrir contexto":"Abrir registros do projeto"}</button>}</details>)}
+            </details>}
+          </section>
+        </article>;
+      })}
+      {busy && <div className="knowledge-turn"><div className="knowledge-user"><small>VOCÊ</small><p>{pendingQuestion}</p></div><div className="panel knowledge-answer" role="status">Consultando documentos, registros e resumos para preparar sua resposta…</div></div>}
+    </div>
+    <section className="panel knowledge-question knowledge-composer">
+      <form onSubmit={ask}><label htmlFor="knowledge-question">{turns.length?"Continue a conversa":"O que você quer fazer?"}</label><textarea ref={composer} id="knowledge-question" maxLength={4000} rows={3} value={question} onChange={e=>setQuestion(e.target.value)} placeholder={turns.length?"Agora organize por responsável e destaque o que está sem prazo…":"Ex.: crie uma tabela de tarefas com base nas sínteses, com responsáveis e prazos."} disabled={busy}/><div className="knowledge-send"><small>Listas de tarefas são propostas para revisão. Nenhuma tarefa é cadastrada automaticamente.</small><button className="button primary" disabled={busy} type="submit">{busy?"Preparando resposta…":"Enviar mensagem"}</button></div></form>
       {error && <p className="form-error" role="alert">{error}</p>}
+      <p className="knowledge-session-note">Esta conversa permanece enquanto a tela estiver aberta. A IA usa até as seis últimas respostas como contexto e consulta novamente as fontes a cada pedido.</p>
     </section>
-    {answer && <section className="panel knowledge-answer" aria-label="Resposta do projeto">
-      <h2>{answer.status==="answered"?"O que os registros mostram":"Registros consultados"}</h2>
-      {answer.message && <p role="status">{answer.message}</p>}
-      {answer.paragraphs.map((paragraph,i)=><p className="knowledge-paragraph" key={i}>{paragraph.text} <span className="knowledge-citations">{paragraph.source_numbers.map(n=><a key={n} href={`#knowledge-source-${n}`} aria-label={`Conferir fonte ${n}`}>[{n}]</a>)}</span></p>)}
-      {answer.warnings.map(w=><p key={w} className="knowledge-note" role="status">{w}</p>)}
-      {!!answer.sources.length && <><h3>Fontes e trechos consultados</h3><p className="muted-text">As datas abaixo indicam quando o registro foi inserido ou atualizado. A resposta pode ser parcial; confira as evidências antes de decidir.</p>
-        {answer.sources.map(source=><details id={`knowledge-source-${source.number}`} className="knowledge-source" key={source.number}><summary><strong>[{source.number}] {source.title}</strong><span>{kindName[source.kind] || source.kind} · {dateTime(source.created_at)} · trecho {source.part}</span></summary><p>{source.text}</p>{onOpenSource && <button className="button secondary" onClick={()=>onOpenSource(source)}>{source.item_id?"Abrir assunto e histórico":source.kind==="contexto"?"Abrir contexto":"Abrir registros do projeto"}</button>}</details>)}
-      </>}
-    </section>}
   </div>;
 }

@@ -48,12 +48,14 @@ export function rankKnowledge(documents, question, expandedTerms = [], maxChars 
 // All reads are scoped to the authenticated project. No credentials or binary files go to the LLM.
 export async function loadKnowledge(projectId, database = db()) {
   const warnings = [];
-  const limits = [1000,5000,200,200];
+  const limits = [1000,5000,200,200,300,300];
   const queries = [
     'SELECT id,title,summary,location,supplier,responsible,status,due_date,updated_at FROM items WHERE project_id=? ORDER BY updated_at DESC,id DESC LIMIT 1001',
     'SELECT u.id,u.item_id,u.summary,u.evidence,u.created_at,i.title,i.location FROM item_updates u JOIN items i ON i.id=u.item_id WHERE i.project_id=? ORDER BY u.created_at DESC,u.id DESC LIMIT 5001',
     'SELECT id,title,body,content_type,OCTET_LENGTH(file_data) AS file_bytes,created_at FROM sources WHERE project_id=? ORDER BY created_at DESC,id DESC LIMIT 201',
     'SELECT id,title,body,extracted_text,created_at FROM project_context_entries WHERE project_id=? AND archived=0 ORDER BY created_at DESC,id DESC LIMIT 201',
+    'SELECT s.node_id,s.summary,s.important_change,s.generated_at,s.analysis_status,n.title,n.parent_id FROM topic_summaries s JOIN structure_nodes n ON n.id=s.node_id AND n.project_id=s.project_id WHERE s.project_id=? AND n.archived=0 AND s.summary<>\'\' ORDER BY n.parent_id IS NULL DESC,s.generated_at DESC,s.node_id LIMIT 301',
+    'SELECT s.node_id,s.summary,s.generated_at,s.analysis_status,n.title,n.parent_id FROM topic_executive_summaries s JOIN structure_nodes n ON n.id=s.node_id AND n.project_id=s.project_id WHERE s.project_id=? AND n.archived=0 AND s.summary<>\'\' ORDER BY n.parent_id IS NULL DESC,s.generated_at DESC,s.node_id LIMIT 301',
   ];
   const results = await Promise.all(queries.map(sql => database.execute(sql,[projectId])));
   const sets = results.map(([rows],i) => { if(rows.length > limits[i]) warnings.push('O projeto excede o limite de leitura desta consulta; foram priorizados os registros mais recentes.'); return rows.slice(0,limits[i]); });
@@ -62,6 +64,10 @@ export async function loadKnowledge(projectId, database = db()) {
     if(chars + doc.text.length > 4000000) {warnings.push('Parte do conteúdo ficou fora do limite de leitura desta consulta.');return;}
     chars += doc.text.length;documents.push(doc);
   };
+  for(const [index,kind] of [[4,'sintese'],[5,'resumo']]) for(const row of sets[index]) {
+    add({kind,id:row.node_id,node_id:row.node_id,parent_id:row.parent_id,title:row.title,created_at:row.generated_at,text:[row.summary,row.important_change && `Mudança relevante: ${row.important_change}`].filter(Boolean).join('\n\n')});
+    if(row.analysis_status !== 'completed') warnings.push('Há sínteses ou resumos em atualização. A consulta utiliza a última versão salva e sua data de geração.');
+  }
   for(const row of sets[0]) add({kind:'assunto',id:row.id,item_id:row.id,title:row.title,created_at:row.updated_at,text:`Estado atual registrado: ${row.summary}\nLocal: ${row.location}\nFornecedor: ${row.supplier}\nResponsável: ${row.responsible}\nStatus: ${row.status}\nPrazo registrado: ${row.due_date || 'não informado'}`});
   for(const row of sets[1]) add({kind:'historico',id:row.id,item_id:row.item_id,title:`Histórico — ${row.title}`,created_at:row.created_at,text:`Local do assunto: ${row.location}\nRegistro histórico: ${row.summary}\nEvidência: ${row.evidence}`});
   for(const row of sets[3]) add({kind:'contexto',id:row.id,title:row.title,created_at:row.created_at,text:[row.body,row.extracted_text].filter(Boolean).join('\n\n')});
@@ -91,4 +97,52 @@ export function validateKnowledgeAnswer(result, sources) {
   });
   if(!paragraphs.length) throw new Error('Empty knowledge response');
   return paragraphs;
+}
+
+// A broad instruction (e.g. a task list from syntheses) need not match literal words.
+// Round-robin passages favor topic coverage, and report every volume reduction.
+export function selectKnowledge(documents, question, plan = {}) {
+  const preferred = plan.source === 'syntheses' ? ['sintese'] : plan.source === 'executive' ? ['resumo'] : null;
+  const corpus = preferred ? documents.filter(d=>preferred.includes(d.kind)) : documents;
+  if(plan.scope !== 'project') return rankKnowledge(corpus, plan.search_terms?.length ? plan.search_terms.join(' ') : question, plan.search_terms || []);
+  const ordered = [...corpus].sort((a,b)=> {
+    const priority = d => (d.kind === 'sintese' || d.kind === 'resumo') ? (d.parent_id ? 1 : 0) : d.kind === 'assunto' ? 2 : 3;
+    return priority(a)-priority(b) || String(b.created_at).localeCompare(String(a.created_at)) || a.id.localeCompare(b.id);
+  });
+  const sources=[];let used=0,total=0;
+  for(const d of ordered) total += Math.ceil(String(d.text || '').length / 1800);
+  for(let part=0; part<3; part++) for(const d of ordered) {
+    const text=String(d.text || '').slice(part*1800,part*1800+2200);
+    if(!text || sources.length>=24 || used+text.length>42000) continue;
+    sources.push({...d,text,part:part+1,number:sources.length+1});used+=text.length;
+  }
+  return {sources,omitted:total>sources.length};
+}
+
+export function validateConversation(history = []) {
+  if(!Array.isArray(history) || history.length>6) throw new Error('Invalid conversation');
+  let length=0;
+  return history.map(turn=>{
+    if(typeof turn?.question !== 'string' || !turn.question.trim() || turn.question.length>4000 || typeof turn.answer !== 'string' || turn.answer.length>12000) throw new Error('Invalid conversation');
+    length+=turn.question.length+turn.answer.length;
+    if(length>40000) throw new Error('Conversation too long');
+    return {question:turn.question,answer:turn.answer};
+  });
+}
+
+export function validateKnowledgeBlocks(result, sources) {
+  if(!Array.isArray(result?.blocks) || !result.blocks.length || result.blocks.length>24) throw new Error('Invalid response blocks');
+  const numbers=new Set(sources.map(s=>s.number));
+  const string=(value,max)=>typeof value==='string' && value.length<=max;
+  let chars=0;
+  return result.blocks.map(b=>{
+    if(!['paragraph','list','table'].includes(b.type) || !string(b.title,200) || !string(b.text,4000) ||
+      !Array.isArray(b.items) || b.items.length>30 || b.items.some(x=>!string(x,2000)) ||
+      !Array.isArray(b.columns) || b.columns.length>8 || b.columns.some(x=>!string(x,150)) ||
+      !Array.isArray(b.rows) || b.rows.length>30 || b.rows.some(r=>!Array.isArray(r) || r.length!==b.columns.length || r.some(x=>!string(x,1500))) ||
+      !Array.isArray(b.source_numbers) || !b.source_numbers.length || b.source_numbers.some(n=>!numbers.has(n))) throw new Error('Invalid grounded block');
+    if(b.type==='paragraph' && !b.text.trim() || b.type==='list' && !b.items.length || b.type==='table' && (!b.columns.length || !b.rows.length)) throw new Error('Empty block');
+    chars+=JSON.stringify(b).length;if(chars>32000) throw new Error('Response too long');
+    return {type:b.type,title:b.title,text:b.text,items:b.items,columns:b.columns,rows:b.rows,source_numbers:[...new Set(b.source_numbers)]};
+  });
 }

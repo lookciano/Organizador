@@ -114,3 +114,25 @@ test('copy failure gives honest feedback and no button appears without a summary
  await act(async()=>{document.querySelector('[aria-label="Copiar resumo executivo"]').click();await Promise.resolve();});assert.match(document.body.textContent,/Não foi possível copiar/);
  await act(()=>root.render(createElement(ExecutiveSummaryView,{onRetry:async()=>{}})));assert.equal(document.querySelector('[aria-label="Copiar resumo executivo"]'),null);
 });
+
+test('conversation renders a table and sends a bounded follow-up without losing the first answer',async t=>{
+ const calls=[];const block={type:'table',title:'Tarefas propostas',text:'',items:[],columns:['Ação','Responsável','Prazo'],rows:[['Revisar cubículo','Maria','Não informado']],source_numbers:[1]};
+ const response={status:'answered',blocks:[block],paragraphs:[],sources:[{number:1,id:'s',kind:'sintese',title:'Síntese salva',text:'Maria deve revisar.',created_at:'2026-11-01',part:1}],warnings:[]};
+ await mount(t,async(url,options)=>{calls.push({url,body:JSON.parse(options.body)});return reply(response);});
+ await ask('Crie uma tabela de tarefas com base nas sínteses');
+ assert.equal(document.querySelectorAll('table').length,1);assert.match(document.querySelector('tbody').textContent,/Maria/);assert.ok(document.querySelector('[aria-label="Copiar resposta"]'));
+ await act(()=>document.querySelector('a').click());assert.equal(document.querySelector('.knowledge-evidence').open,true);assert.equal(document.querySelector('.knowledge-source').open,true);
+ await ask('Agora organize por responsável');assert.equal(calls[1].body.history.length,1);assert.match(calls[1].body.history[0].answer,/Maria/);assert.equal(document.querySelectorAll('table').length,2);
+ assert.equal(document.querySelectorAll('#knowledge-source-1').length,1);assert.ok(document.querySelector('#knowledge-source-1-1'));
+ assert.ok(calls.every(c=>c.url==='/api/projects/a/knowledge/ask'));
+ await act(()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='Nova conversa').click());
+ assert.equal(document.querySelectorAll('table').length,0);await ask('Outra pergunta');assert.deepEqual(calls[2].body.history,[]);
+});
+test('failed follow-up keeps previous answers and the unsent instruction for retry',async t=>{
+ let count=0;await mount(t,async()=>++count===1?reply({status:'answered',paragraphs:[{text:'Primeira resposta',source_numbers:[1]}],sources:[],warnings:[]}):new Response(JSON.stringify({error:'Serviço temporariamente indisponível'}),{status:503}));
+ await ask('Resuma a obra');await ask('Agora em lista');assert.match(document.body.textContent,/Primeira resposta/);assert.match(document.body.textContent,/temporariamente/);assert.equal(document.querySelector('textarea').value,'Agora em lista');
+});
+test('model content is rendered as text and cannot inject HTML or executable links',async t=>{
+ await mount(t,async()=>reply({status:'answered',blocks:[{type:'list',title:'<script>alert(1)</script>',text:'',items:['<img src=x onerror=alert(1)>'],columns:[],rows:[],source_numbers:[1]}],paragraphs:[],sources:[],warnings:[]}));
+ await ask('Liste as pendências');assert.equal(document.querySelector('script'),null);assert.equal(document.querySelector('img'),null);assert.match(document.body.textContent,/<script>/);
+});

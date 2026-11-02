@@ -254,12 +254,25 @@ test('PR #1: TiDB migration, authorization and regression', { skip: !target, tim
     assert.ok(result.data.sources.every(s=>!s.id.endsWith('-b')));
     assert.deepEqual(result.data.paragraphs,[]);
   });
+  await t.test('saved synthesis and executive summary appear as dated evidence while archived topics stay excluded',async()=>{
+    try {
+      for(const nodeId of ['parent-a','archived-a']) await admin.execute('INSERT INTO topic_summaries (node_id,project_id,revision,summary,important_change,analysis_status,generated_at) VALUES (?,?,?,?,?,?,?)',[nodeId,'project-a','synthetic','Cubículo Ceará-Mirim: revisão pela engenharia.','','completed',stamp]);
+      await admin.execute('INSERT INTO topic_executive_summaries (node_id,project_id,source_hash,summary,analysis_status,generated_at) VALUES (?,?,?,?,?,?)',['parent-a','project-a','synthetic','Cubículo Ceará-Mirim: pendência resumida.','completed',stamp]);
+      const result=await request('/api/projects/project-a/knowledge/ask',{method:'POST',body:{question:'Cubículo Ceará Mirim'}});
+      assert.equal(result.status,200);assert.ok(result.data.sources.some(s=>s.kind==='sintese' && s.created_at===stamp));assert.ok(result.data.sources.some(s=>s.kind==='resumo'));assert.ok(result.data.sources.every(s=>s.id!=='archived-a'));
+    }finally{await admin.execute('DELETE FROM topic_summaries WHERE project_id=?',['project-a']);await admin.execute('DELETE FROM topic_executive_summaries WHERE project_id=?',['project-a']);}
+  });
   await t.test('AI question endpoint enforces membership, authentication, origin and input validation', async () => {
     const path='/api/projects/project-a/knowledge/ask',body={question:'Cubículo Ceará Mirim'};
     assert.equal((await request(path,{user:'',method:'POST',body})).status,401);
     assert.equal((await request(path,{user:'owner-b',method:'POST',body})).status,403);
     assert.equal((await request(path,{method:'POST',body,requestOrigin:'https://untrusted.example.invalid'})).status,403);
-    for(const question of ['',{},'a'.repeat(1001)]) assert.equal((await request(path,{method:'POST',body:{question}})).status,400);
+    for(const question of ['',{},'a'.repeat(4001)]) assert.equal((await request(path,{method:'POST',body:{question}})).status,400);
+  });
+  await t.test('conversation rejects malformed and oversized context before consulting the project', async () => {
+    for(const history of [{},[{role:'system',content:'x'}],Array(7).fill({question:'Teste',answer:'Texto'})]) {
+      const result=await request('/api/projects/project-a/knowledge/ask',{method:'POST',body:{question:'Cubículo',history}});assert.equal(result.status,400);
+    }
   });
   await t.test('questions without evidence return no fabricated answer or unrelated source', async () => {
     const result=await request('/api/projects/project-a/knowledge/ask',{method:'POST',body:{question:'Telescópio orbital plutoniano'}});
