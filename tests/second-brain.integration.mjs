@@ -65,10 +65,11 @@ test('PR #1: TiDB migration, authorization and regression', { skip: !target, tim
     if (server && server.exitCode === null) { server.kill('SIGTERM'); await once(server, 'exit'); }
   }
   t.after(stop);
-  async function start(entrypoint = 'server/index.mjs', analysis = false) {
+  async function start(entrypoint = 'server/index.mjs', analysis = false, direct = false) {
     server = spawn(process.execPath, ['--import', './tests/chatask-upstream.mock.mjs', '--import', './tests/analysis-provider.mock.mjs', entrypoint], { env: {
       PATH: process.env.PATH, NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS,
       DATABASE_URL: target, BOOTSTRAP_EMAIL: 'owner-a@example.invalid', BOOTSTRAP_PASSWORD: password,
+      TEST_DIRECT_REPORT:direct?'1':'',
       HOST: '127.0.0.1', PORT: String(port), APP_ORIGIN: origin,
       ...(analysis?{OPENROUTER_API_KEY:'synthetic-provider-key',ANALYSIS_FIXTURE:'1'}:{}),
     }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -366,6 +367,18 @@ test('PR #1: TiDB migration, authorization and regression', { skip: !target, tim
     const value=await advanceAnalysis(id);assert.equal(value.state,'complete');assert.equal(value.result.coverage.history_included,true);assert.equal(value.result.coverage.originals_included,true);
     const [chunks]=await admin.execute('SELECT source_json FROM knowledge_analysis_chunks WHERE analysis_id=?',[id]);
     for(const kind of ['historico','assunto','fonte'])assert.ok(chunks.some(r=>JSON.parse(r.source_json).kind===kind));
+  });
+  await t.test('direct report reads the full report with context in one answer and records complete coverage',async()=>{
+    await stop();await start('server/index.mjs',true,true);
+    const id=randomUUID();await request(analysisBase,{method:'POST',body:{id,question:'Faça uma lista de tarefas pelas sínteses'}});
+    const value=await advanceAnalysis(id);assert.equal(value.state,'complete');assert.equal(value.result.coverage.read_method,'direct');
+    assert.equal(value.result.coverage.chunks_read,value.result.coverage.chunks_total);assert.equal(value.result.coverage.task_status,'not_requested');
+    assert.ok(value.result.blocks.some(b=>b.items.includes('Conferir TASK-LAST')));assert.ok(value.result.sources.some(s=>s.text.includes('TASK-LAST')));
+    const [[count]]=await admin.execute('SELECT COUNT(*) AS n FROM knowledge_analysis_chunks WHERE analysis_id=? AND reviewed=0',[id]);assert.equal(count.n,0);
+  });
+  await t.test('an incomplete direct answer falls back without claiming complete coverage early',async()=>{
+    const id=randomUUID();await request(analysisBase,{method:'POST',body:{id,question:'Faça uma lista incompleta para testar a retomada'}});
+    const value=await advanceAnalysis(id);assert.equal(value.state,'complete');assert.notEqual(value.result.coverage.read_method,'direct');assert.equal(value.progress.completed,value.progress.total);
   });
   await t.test('cancellation invalidates work and lets a new analysis start',async()=>{
     const id=randomUUID();await request(analysisBase,{method:'POST',body:{id,question:'Análise para encerrar'}});

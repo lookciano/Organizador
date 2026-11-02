@@ -3,7 +3,7 @@ import { db } from './db.mjs';
 import { readChataskProjectTasks } from './chatask.mjs';
 import { validateConversation } from './knowledge.mjs';
 import { loadProjectCorpus,makeChunks,batchBySize,validateFindings,uniqueCandidates,validateMatches,finishComparisons,taskDocuments,revisionOf,validateKnowledgeBlocks } from './project-analysis.mjs';
-import { planProjectAnalysis,reviewProjectBatch,compareProjectTasks,reduceProjectFindings,answerKnowledgeQuestion } from './ai.mjs';
+import { planProjectAnalysis,reviewProjectBatch,compareProjectTasks,reduceProjectFindings,answerKnowledgeQuestion,canAnswerProjectDirectly } from './ai.mjs';
 
 const now=()=>new Date().toISOString();
 const json=value=>typeof value==='string'?JSON.parse(value):value;
@@ -41,6 +41,11 @@ async function performStep(row,token,session) {
     console.info('project_analysis_scope:',JSON.stringify({tasks:p.plan.tasks,needs_tasks:p.plan.needs_tasks,history:p.plan.history,originals:options.originals||p.plan.originals}));
     await checkpoint(row.id,token,p);return;
   }
+  if(!p.directChecked&&['context','review','support_reduce'].includes(p.phase)) {
+    p.directChecked=true;
+    if(p.plan.tasks!=='compare'&&await canAnswerProjectDirectly(row.question,await sourcesFor(row.id),history,p.coverage)){p.fallbackPhase=p.phase;p.phase='answer_direct';}
+    await checkpoint(row.id,token,p);return;
+  }
   if(p.phase==='prepare') {
     const started=Date.now();
     let corpus;const connection=await db().getConnection();
@@ -68,6 +73,21 @@ async function performStep(row,token,session) {
         await sql.execute(`INSERT INTO knowledge_analysis_chunks (analysis_id,sequence_number,source_json,body) VALUES ${batch.map(()=>'(?,?,?,?)').join(',')}`,batch.flatMap(c=>{const {text,...meta}=c;return [row.id,c.number,JSON.stringify(meta),text];}));
       }
     });return;
+  }
+  if(p.phase==='answer_direct') {
+    const sources=await sourcesFor(row.id),coverage={...p.coverage,read_method:'direct',chunks_read:p.total,chunks_total:p.total,comparison_requested:false,comparison_complete:false};
+    let generated;
+    try{generated=await answerKnowledgeQuestion(row.question,sources,history,coverage,true);}
+    catch(error){
+      if(!/A IA (não concluiu|devolveu JSON incompleto)/.test(error.message))throw error;
+      generated={complete:false};
+    }
+    if(generated.complete!==true){p.phase=p.fallbackPhase||'review';p.notice='A resposta direta não foi concluída; continuando a leitura em etapas com as mesmas fontes.';await checkpoint(row.id,token,p);return;}
+    const blocks=validateKnowledgeBlocks(generated,sources),cited=new Set(blocks.flatMap(b=>b.source_numbers));
+    const warnings=p.coverage.issues.length?['Há conteúdo pendente ou sem atualização confirmada. Confira a cobertura abaixo.']:[];
+    if(p.plan.needs_tasks&&!p.tasks.available)warnings.push(p.coverage.task_message||'A lista da sala não pôde ser consultada.');
+    const result={status:'answered',blocks,paragraphs:[],sources:sources.filter(s=>cited.has(s.number)),warnings,coverage,comparisons:[],task_mode:p.plan.tasks};
+    await checkpoint(row.id,token,{phase:'complete',coverage,completed:p.total,total:p.total},async sql=>{await sql.execute('UPDATE knowledge_analysis_chunks SET reviewed=1 WHERE analysis_id=?',[row.id]);},result);return;
   }
   if(p.phase==='review'||p.phase==='context') {
     const isContext=p.phase==='context';

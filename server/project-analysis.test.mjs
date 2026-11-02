@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {loadProjectCorpus,readAllPages,topicPaths,makeChunks,batchBySize,validateFindings,uniqueCandidates,validateMatches,finishComparisons} from './project-analysis.mjs';
+import {reportFitsContext} from './ai.mjs';
 import {publicAnalysis} from './analysis-jobs.mjs';
 
 test('full pagination visits records after old 300-record limit and scopes each page',async()=>{
@@ -77,4 +78,11 @@ test('explicit history and original requests extend, rather than replace, the li
  const {database}=corpusFixture(),result=await loadProjectCorpus('project-a',database,{history:true,originals:true});
  for(const kind of ['contexto','estrutura','sintese','resumo','assunto','historico','fonte'])assert.ok(result.documents.some(d=>d.kind===kind),kind);
  assert.equal(result.coverage.history_included,true);assert.equal(result.coverage.originals_included,true);
+});
+
+test('direct reading requires a verified capacity with reserved space and respects the smaller provider window',()=>{
+ assert.equal(reportFitsContext(400000,{context_length:1048576,top_provider:{context_length:1048576,max_completion_tokens:16000}}),true);
+ assert.equal(reportFitsContext(400000,{context_length:1048576,top_provider:{context_length:128000,max_completion_tokens:16000}}),false);
+ assert.equal(reportFitsContext(400000,null),false);assert.equal(reportFitsContext(400000,{context_length:1048576,top_provider:{max_completion_tokens:4096}}),false);
+ assert.equal(reportFitsContext(900000,{context_length:1048576}),false);
 });
