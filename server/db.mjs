@@ -2,6 +2,7 @@ import mysql from 'mysql2/promise';
 import bcrypt from 'bcryptjs';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { migrateStationTitles } from './station-migration.mjs';
 
 let pool;
 let activeDatabase;
@@ -224,6 +225,9 @@ export async function initializeDatabase() {
       if (columns[0]?.DATA_TYPE?.toLowerCase() !== 'longtext') await connection.query(`ALTER TABLE \`${table}\` MODIFY COLUMN summary LONGTEXT NOT NULL`);
     }
     await addCommissioningStations(connection);
+    // Padroniza os títulos das subestações (nome canônico do edital) e cria as folhas
+    // de Pilões III. Roda uma vez por projeto, registrado em app_migrations.
+    await migrateStationTitles(connection);
     const email = process.env.BOOTSTRAP_EMAIL?.trim().toLowerCase();
     const password = process.env.BOOTSTRAP_PASSWORD;
     if (!email || !password || password.length < 12) {
