@@ -43,7 +43,7 @@ async function performStep(row,token,session) {
   }
   if(!p.directChecked&&['context','review','support_reduce'].includes(p.phase)) {
     p.directChecked=true;
-    if(p.plan.tasks!=='compare'&&await canAnswerProjectDirectly(row.question,await sourcesFor(row.id),history,p.coverage)){p.fallbackPhase=p.phase;p.phase='answer_direct';}
+    if(p.plan.tasks!=='compare'&&await canAnswerProjectDirectly(row.question,await sourcesFor(row.id),history,p.coverage)){p.phase='answer_direct';}
     await checkpoint(row.id,token,p);return;
   }
   if(p.phase==='prepare') {
@@ -82,7 +82,7 @@ async function performStep(row,token,session) {
       if(!/A IA (não concluiu|devolveu JSON incompleto)/.test(error.message))throw error;
       generated={complete:false};
     }
-    if(generated.complete!==true){p.phase=p.fallbackPhase||'review';p.notice='A resposta direta não foi concluída; continuando a leitura em etapas com as mesmas fontes.';await checkpoint(row.id,token,p);return;}
+    if(generated.complete!==true)throw Object.assign(new Error('Resposta direta incompleta.'),{code:'DIRECT_ANSWER_INCOMPLETE'});
     const blocks=validateKnowledgeBlocks(generated,sources),cited=new Set(blocks.flatMap(b=>b.source_numbers));
     const warnings=p.coverage.issues.length?['Há conteúdo pendente ou sem atualização confirmada. Confira a cobertura abaixo.']:[];
     if(p.plan.needs_tasks&&!p.tasks.available)warnings.push(p.coverage.task_message||'A lista da sala não pôde ser consultada.');
@@ -182,9 +182,17 @@ async function advance(row,token,session) {
     const category=/^[A-Z_0-9]+$/.test(error.code||'')?error.code:validationCodes[error.message]|| (error.name==='TimeoutError'?'PROVIDER_TIMEOUT':/Falha na análise/.test(error.message)?'PROVIDER_ERROR':/IA.*(JSON|interrompeu|concluiu)/.test(error.message)?'PROVIDER_INCOMPLETE':'VALIDATION_OR_STEP_ERROR');
     const frame=String(error.stack||'').match(/\/(?:server)\/([a-z-]+\.mjs):([0-9]+):[0-9]+/);
     console.warn('project_analysis_paused:',phase,category,'duration_ms',Date.now()-started,...(frame?['location',`${frame[1]}:${frame[2]}`]:[]));
-    const p=json(row.progress_json);p.error='Esta etapa não foi concluída. O progresso anterior foi salvo; tente retomar.';
+    const p=json(row.progress_json);p.error=category==='DIRECT_ANSWER_INCOMPLETE'?'A IA não concluiu a resposta nesta tentativa. Você pode retomar; a leitura em etapas não foi iniciada.':'Esta etapa não foi concluída. O progresso anterior foi salvo; tente retomar.';
     await db().execute('UPDATE knowledge_analyses SET state=?,progress_json=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=? AND state=? AND lease_token=?',['paused',JSON.stringify(p),now(),row.id,'working',token]).catch(()=>{});
   }finally{clearInterval(heartbeat);active.delete(row.id);}
+}
+export function stagedContinuation(progress) {
+  if (progress?.phase !== 'answer_direct') return null;
+  const next = { ...progress, directChecked: true };
+  delete next.error;
+  next.phase = Array.isArray(next.supportPending) && next.supportPending.length ? 'context' : 'review';
+  next.notice = 'A resposta direta não coube nesta tentativa; continuando a leitura em etapas.';
+  return next;
 }
 export function registerAnalysisRoutes(app,requireUser,membership,run,readCookie) {
   const guard=[requireUser,membership];
@@ -214,10 +222,22 @@ export function registerAnalysisRoutes(app,requireUser,membership,run,readCookie
     const row=await owned(req);if(!row)return res.status(404).json({error:'Análise não encontrada.'});
     if(['complete','cancelled'].includes(row.state))return res.json(publicAnalysis(row));
     if(active.has(row.id)||active.size>=3)return res.status(202).json(publicAnalysis(row));
+    // A resposta direta que não coube pode seguir pela leitura em etapas em vez de repetir a mesma tentativa lenta.
+    let staged=null;
+    if(row.state==='paused'&&req.body?.mode==='staged'){
+      const next=stagedContinuation(json(row.progress_json));
+      if(next)staged=JSON.stringify(next);
+    }
     const token=randomUUID();
-    const [claim]=await db().execute("UPDATE knowledge_analyses SET state='working',lease_token=?,lease_until=?,updated_at=? WHERE id=? AND (state IN ('ready','paused') OR (state='working' AND lease_until<?))",[token,leaseEnd(),now(),row.id,now()]);
-    if(claim.affectedRows)void advance(row,token,readCookie(req,'organizador_session'));
-    res.status(202).json({...publicAnalysis(row),state:claim.affectedRows?'working':publicAnalysis(row).state});
+    const [claim]=staged
+      ?await db().execute("UPDATE knowledge_analyses SET state='working',progress_json=?,lease_token=?,lease_until=?,updated_at=? WHERE id=? AND state='paused'",[staged,token,leaseEnd(),now(),row.id])
+      :await db().execute("UPDATE knowledge_analyses SET state='working',lease_token=?,lease_until=?,updated_at=? WHERE id=? AND (state IN ('ready','paused') OR (state='working' AND lease_until<?))",[token,leaseEnd(),now(),row.id,now()]);
+    if(claim.affectedRows){
+      const [[fresh]]=await db().execute('SELECT * FROM knowledge_analyses WHERE id=?',[row.id]);
+      void advance(fresh||row,token,readCookie(req,'organizador_session'));
+      return res.status(202).json(publicAnalysis(fresh||row));
+    }
+    res.status(202).json(publicAnalysis(row));
   }));
   app.post(`${apiPath}/:analysisId/cancel`,...guard,run(async(req,res)=>{
     const row=await owned(req);if(!row)return res.status(404).json({error:'Análise não encontrada.'});

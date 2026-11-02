@@ -376,9 +376,10 @@ test('PR #1: TiDB migration, authorization and regression', { skip: !target, tim
     assert.ok(value.result.blocks.some(b=>b.items.includes('Conferir TASK-LAST')));assert.ok(value.result.sources.some(s=>s.text.includes('TASK-LAST')));
     const [[count]]=await admin.execute('SELECT COUNT(*) AS n FROM knowledge_analysis_chunks WHERE analysis_id=? AND reviewed=0',[id]);assert.equal(count.n,0);
   });
-  await t.test('an incomplete direct answer falls back without claiming complete coverage early',async()=>{
+  await t.test('an incomplete direct answer pauses without launching slow batch reviews',async()=>{
     const id=randomUUID();await request(analysisBase,{method:'POST',body:{id,question:'Faça uma lista incompleta para testar a retomada'}});
-    const value=await advanceAnalysis(id);assert.equal(value.state,'complete');assert.notEqual(value.result.coverage.read_method,'direct');assert.equal(value.progress.completed,value.progress.total);
+    const value=await advanceAnalysis(id);assert.equal(value.state,'paused');assert.equal(value.progress.phase,'answer_direct');assert.equal(value.progress.completed,0);assert.equal(value.result,null);assert.match(value.progress.error,/leitura em etapas não foi iniciada/);
+    await request(`${analysisBase}/${id}/cancel`,{method:'POST',body:{}});
   });
   await t.test('cancellation invalidates work and lets a new analysis start',async()=>{
     const id=randomUUID();await request(analysisBase,{method:'POST',body:{id,question:'Análise para encerrar'}});

@@ -154,6 +154,18 @@ test('paused analysis shows saved progress and resumes without creating a second
  await act(()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='Retomar análise').click());
  assert.match(document.body.textContent,/Comparação retomada/);assert.equal(calls.filter(u=>u.endsWith('/analyses')).length,1);
 });
+test('a paused direct answer offers the staged reading instead of only repeating the slow attempt',async t=>{
+ const bodies=[];
+ await mount(t,async(url,options)=>{
+   if(url.endsWith('/advance')){bodies.push(JSON.parse(options.body||'{}'));return reply({id:'direct',question:'Liste as tarefas da sala',state:'working',progress:{phase:'review',completed:0,total:64},result:null});}
+   return reply({id:'direct',question:'Liste as tarefas da sala',state:'paused',progress:{phase:'answer_direct',completed:0,total:64,error:'A IA não concluiu a resposta nesta tentativa.'},result:null});
+ });
+ await ask('Liste as tarefas da sala');
+ assert.match(document.body.textContent,/Continuar em etapas/);
+ assert.match(document.body.textContent,/Tentar resposta direta de novo/);
+ await act(()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='Continuar em etapas').click());
+ assert.deepEqual(bodies.at(-1),{mode:'staged'});
+});
 test('coverage and every candidate remain available beyond the first visible page',async t=>{
  const comparisons=Array.from({length:25},(_,i)=>({id:i+1,action:`Proposta ${i+1}`,location:'Ceará-Mirim',equipment:'Cubículo',responsible:'',due_date:'',source_numbers:[1],classification:'not_compared',matches:[]}));
  await mount(t,async()=>reply({status:'answered',paragraphs:[],sources:[],warnings:[],comparisons,coverage:{snapshot_at:'2026-11-01T12:00:00Z',counts:{sintese:305},issues:[{id:'a',kind:'fonte',title:'Ata pendente',message:'Ainda não organizada.'}],task_status:'unavailable',task_count:null,task_room:'',tasks_read_at:'',task_message:'Conecte sua conta.',originals_included:false,chunks_read:500,chunks_total:500,comparison_requested:true,comparison_complete:false}}));

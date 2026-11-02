@@ -95,3 +95,18 @@ test('answer validation reports safe categories without copying generated conten
  assert.throws(()=>validateKnowledgeBlocks({blocks:Array(25).fill(block)},[{number:1}]),{code:'ANSWER_BLOCK_COUNT'});
  assert.throws(()=>validateKnowledgeBlocks({blocks:[{...block,items:Array(20).fill('x'.repeat(2000))}]},[{number:1}]),{code:'ANSWER_TOTAL_SIZE'});
 });
+
+test('incomplete direct generation makes one provider attempt and logs only numeric usage',async()=>{
+ const previousFetch=globalThis.fetch,previousInfo=console.info,previousKey=process.env.OPENROUTER_API_KEY;
+ const logs=[];let attempts=0;process.env.OPENROUTER_API_KEY='synthetic-key';console.info=(...args)=>logs.push(args);
+ globalThis.fetch=async(url,options)=>{
+  if(String(url).endsWith('/models'))return {ok:true,json:async()=>({data:[]})};
+  attempts++;const body=JSON.parse(options.body);assert.equal(body.max_output_tokens,16000);
+  return {ok:true,json:async()=>({status:'incomplete',incomplete_details:{reason:'max_output_tokens'},usage:{output_tokens:16000,output_tokens_details:{reasoning_tokens:15900}},output_text:'PRIVATE PARTIAL CONTENT'})};
+ };
+ try{
+  await assert.rejects(answerKnowledgeQuestion('Proponha tarefas',[{number:1,text:'PRIVATE PROJECT'}],[],{},true),/não concluiu/);
+  assert.equal(attempts,1);assert.ok(logs.some(args=>String(args[1]).includes('max_output_tokens')));
+  assert.doesNotMatch(JSON.stringify(logs),/PRIVATE|synthetic-key/);
+ }finally{globalThis.fetch=previousFetch;console.info=previousInfo;if(previousKey===undefined)delete process.env.OPENROUTER_API_KEY;else process.env.OPENROUTER_API_KEY=previousKey;}
+});
