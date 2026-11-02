@@ -10,7 +10,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "start": "node server/index.mjs",
-    "check": "tsc --noEmit && node --check server/index.mjs && node --check server/db.mjs && node --check server/ai.mjs && node --check server/stations.mjs && node --check server/topic-summaries.mjs && node --check server/executive-summaries.mjs && node --check server/project-context.mjs && node --check server/structure-csv.mjs && node --check server/second-brain.mjs && node --check server/knowledge.mjs && node --check server/chatask.mjs && node --check server/project-analysis.mjs && node --check server/analysis-jobs.mjs",
+    "check": "tsc --noEmit && node --check server/index.mjs && node --check server/db.mjs && node --check server/station-migration.mjs && node --check server/ai.mjs && node --check server/stations.mjs && node --check server/topic-summaries.mjs && node --check server/executive-summaries.mjs && node --check server/project-context.mjs && node --check server/structure-csv.mjs && node --check server/second-brain.mjs && node --check server/knowledge.mjs && node --check server/chatask.mjs && node --check server/project-analysis.mjs && node --check server/analysis-jobs.mjs",
     "test": "node --test server/*.test.mjs",
     "test:integration": "node --test tests/second-brain.integration.mjs",
     "test:ui": "node --test tests/second-brain.ui.mjs",

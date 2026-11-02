@@ -2,15 +2,29 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildStationRegistry, canonicalStation, canonicalStations, normalizeStation, stationKey, stationListForPrompt } from './stations.mjs';
 
-test('registro canônico traz as 15 subestações do projeto', () => {
+test('registro canônico traz as 15 subestações e as 2 frentes de Jussiape', () => {
   const registry = buildStationRegistry([]);
-  assert.equal(registry.length, 15);
+  assert.equal(registry.length, 17);
   const names = registry.map((entry) => entry.canonical);
   for (const expected of ['Ceará Mirim II', 'João Pessoa II', 'Pau Ferro', 'Garanhuns II', 'Messias', 'Pilões III',
     'Jussiape', 'São João do Paraíso', 'Capelinha 3', 'Itabira 5', 'Igaporã III', 'Ibicoara', 'Ourolândia II',
-    'Extremoz II', 'Campina Grande III']) {
+    'Extremoz II', 'Campina Grande III', 'Jussiape (GST)', 'Jussiape (TAESA)']) {
     assert.ok(names.includes(expected), `faltou ${expected}`);
   }
+});
+
+test('Jussiape (GST) e Jussiape (TAESA) são frentes distintas e não se misturam', () => {
+  const registry = buildStationRegistry([]);
+  assert.equal(canonicalStation('Jussiape (GST)', registry), 'Jussiape (GST)');
+  assert.equal(canonicalStation('Jussiape GST', registry), 'Jussiape (GST)');
+  assert.equal(canonicalStation('Jussiape (TAESA)', registry), 'Jussiape (TAESA)');
+  assert.equal(canonicalStation('Jussiape TAESA', registry), 'Jussiape (TAESA)');
+  assert.equal(canonicalStation('SE Jussiape TAESA lote GS2', registry), 'Jussiape (TAESA)');
+  assert.equal(canonicalStation('Jussiape', registry), 'Jussiape');
+  assert.notEqual(stationKey('Jussiape (GST)', registry), stationKey('Jussiape (TAESA)', registry));
+  // Nas demais estações a empresa é ruído.
+  assert.equal(canonicalStation('Ibicoara (TAESA)', registry), 'Ibicoara');
+  assert.equal(canonicalStation('Ceará-Mirim (Axia)', registry), 'Ceará Mirim II');
 });
 
 test('resolve variações, apelidos, siglas de empresa e erros de grafia', () => {
@@ -75,7 +89,7 @@ test('lista para prompt mostra canônico e variações conhecidas', () => {
   const text = stationListForPrompt(registry);
   assert.match(text, /- Ourolândia II \(também citada como: Ourolândia/);
   assert.match(text, /- Pau Ferro$/m);
-  assert.equal(text.split('\n').length, 15);
+  assert.equal(text.split('\n').length, 17);
 });
 
 test('stationKey agrupa variantes na mesma chave', () => {

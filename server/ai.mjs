@@ -1,6 +1,6 @@
 import { extractFileText, splitForAnalysis } from './file-text.mjs';
 import { selectProjectContext } from './project-context.mjs';
-import { buildStationRegistry, canonicalStation, canonicalStations, normalizeStation, stationListForPrompt } from './stations.mjs';
+import { buildStationRegistry, canonicalStation, canonicalStations, stationKey, stationListForPrompt } from './stations.mjs';
 
 const extractionSchema = {
   type: 'object',
@@ -579,12 +579,11 @@ export async function summarizeTopicHistory({ projectName, topicPath, items, upd
       if (!stationRegistry.length) return text;
       return canonicalStation(text, stationRegistry) || 'Informações gerais';
     };
-    const stationKey = (value) => normalizeStation(resolveGroup(value));
     const formatDate = (stamp) => stamp ? new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(stamp)) : 'data não informada';
     const groups = new Map();
     const add = (name, item, detail, date, includeSharedDetails = true) => {
       const resolved = resolveGroup(name);
-      const key = normalizeStation(resolved);
+      const key = stationKey(resolved, stationRegistry);
       if (!groups.has(key)) groups.set(key, { name: resolved, entries: [], latest: '' });
       const group = groups.get(key);
       const context = [
@@ -610,7 +609,7 @@ export async function summarizeTopicHistory({ projectName, topicPath, items, upd
           const name = String(location.name || '').trim();
           const detail = String(location.text || '').replace(/\s+/g, ' ').trim();
           if (!name || !detail) continue;
-          const matched = itemUpdates.filter((update) => stationKey(`${update.summary} ${update.evidence || ''}`).includes(stationKey(name)));
+          const matched = itemUpdates.filter((update) => stationKey(`${update.summary} ${update.evidence || ''}`, stationRegistry).includes(stationKey(name, stationRegistry)));
           const locationDate = matched.at(-1)?.created_at || (locations.length === 1 ? latest : '');
           add(name, item, detail, locationDate, !multipleLocations);
         }

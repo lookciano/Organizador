@@ -34,6 +34,24 @@ const NOISE_TOKENS = new Set(['se', 'subestacao', 'subestacoes', 'sub', 'do', 'd
   'taesa', 'axia', 'argo', 'argoi', 'chesf', 'kv', 'e']);
 const ROMAN = new Set(['i', 'ii', 'iii', 'iv', 'v', 'vi']);
 
+// Escopos que distinguem DUAS frentes na mesma subestação. Decisão do projeto: em
+// Jussiape convivem a implantação do Grande Sertão e as instalações da TAESA, e as
+// duas devem permanecer separadas. Para as demais estações a empresa é só ruído.
+export const STATION_SCOPES = {
+  jussiape: {
+    GST: { canonical: 'Jussiape (GST)', aliases: ['Jussiape GST', 'Jussiape — GST', 'Jussiape - GST'] },
+    TAESA: { canonical: 'Jussiape (TAESA)', aliases: ['Jussiape TAESA', 'Jussiape — TAESA', 'Jussiape - TAESA'] },
+  },
+};
+
+const SCOPE_TOKENS = { gst: 'GST', taesa: 'TAESA', axia: 'AXIA', chesf: 'AXIA', argo: 'ARGO', argoi: 'ARGO', ieg: 'IEG', isa: 'ISA', sterlite: 'STERLITE', mantiqueira: 'MANTIQUEIRA' };
+
+function detectScope(value) {
+  const tokens = String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().match(/[a-z]+/g) || [];
+  for (const token of tokens) if (SCOPE_TOKENS[token]) return SCOPE_TOKENS[token];
+  return '';
+}
+
 export function normalizeStation(value) {
   return String(value || '')
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -115,6 +133,25 @@ export function buildStationRegistry(nodes = []) {
 
   for (const group of STATION_GROUPS) add(group.canonical, group.aliases);
 
+  // Frentes com escopo próprio (Jussiape GST / TAESA): entram como identidades
+  // separadas, com chave pelo nome qualificado para não colidir com a estação base.
+  for (const [base, scopes] of Object.entries(STATION_SCOPES)) {
+    if (!byKey.has(base)) continue;
+    for (const scope of Object.values(scopes)) {
+      const key = normalizeStation(scope.canonical);
+      const entry = { canonical: scope.canonical, keys: new Set(), labels: [scope.canonical] };
+      for (const label of [scope.canonical, ...scope.aliases]) {
+        const labelKey = normalizeStation(label);
+        if (!labelKey || labelKey === base) continue;
+        entry.keys.add(labelKey);
+        if (!entry.labels.includes(label)) entry.labels.push(label);
+        if (!byKey.has(labelKey)) byKey.set(labelKey, entry);
+      }
+      if (key && key !== base) entry.keys.add(key);
+      entries.push(entry);
+    }
+  }
+
   for (const title of stationBranchTitles(nodes)) {
     const cleaned = cleanTokens(title).join(' ');
     const entry = byKey.get(cleaned) || byKey.get(normalizeStation(title));
@@ -145,7 +182,7 @@ export function stationListForPrompt(registry = [], { maxAliases = 5 } = {}) {
 
 // Resolve uma menção livre para o nome canônico. Devolve '' quando não há
 // correspondência segura — quem chama decide o que fazer (nunca inventar).
-export function canonicalStation(value, registry = []) {
+function resolveStationBase(value, registry = []) {
   if (!registry.length) return '';
   const raw = normalizeStation(value);
   if (!raw) return '';
@@ -191,6 +228,18 @@ export function canonicalStation(value, registry = []) {
 
 // Menção que cita várias subestações ("Jussiape, Ibicoara e Igaporã"): devolve todas
 // as canônicas reconhecidas. Vazio quando não há nenhuma correspondência segura.
+export function canonicalStation(value, registry = []) {
+  const base = resolveStationBase(value, registry);
+  if (!base) return '';
+  // Escopo: "Jussiape (TAESA)" e "Jussiape (GST)" são frentes distintas da mesma SE.
+  const scope = detectScope(value);
+  if (scope) {
+    const scoped = STATION_SCOPES[normalizeStation(base)]?.[scope];
+    if (scoped) return scoped.canonical;
+  }
+  return base;
+}
+
 export function canonicalStations(value, registry = []) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   if (!text) return [];
@@ -214,5 +263,9 @@ export function resolveStationName(value, registry = []) {
 }
 
 export function stationKey(value, registry = []) {
-  return normalizeStation(resolveStationName(value, registry));
+  const canonical = resolveStationName(value, registry);
+  const scope = detectScope(canonical);
+  const base = normalizeStation(canonical);
+  // O escopo entra na chave: "Jussiape (GST)" e "Jussiape (TAESA)" não se agrupam.
+  return scope && STATION_SCOPES[base]?.[scope] ? `${base} ${scope.toLowerCase()}` : base;
 }

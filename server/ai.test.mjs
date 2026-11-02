@@ -668,3 +668,24 @@ test('local sem correspondência canônica não cria seção de subestação', a
     assert.match(result.summary, /Informações gerais/);
   });
 });
+
+test('síntese mantém Jussiape (GST) e Jussiape (TAESA) em seções separadas', async () => {
+  const registry = buildStationRegistry([]);
+  await mockAnalysis({ bullets: [
+    { item_id: 'g', text: '', locations: [{ name: 'Jussiape (GST)', text: 'Implantação do GST em andamento.' }] },
+    { item_id: 't', text: '', locations: [{ name: 'Jussiape (TAESA)', text: 'Terminais da TAESA liberados.' }] },
+  ], important_change: '', changed_item_id: '', change_before: '', change_after: '' }, async () => {
+    const result = await summarizeTopicHistory({
+      projectName: 'Teste', topicPath: 'Estudos, SPCS e Proteção', isMainSection: true, stationRegistry: registry,
+      items: [
+        { id: 'g', title: 'Proteção GST', updated_at: '2026-10-24T10:00:00Z', status: 'em_andamento', summary: 'Em andamento.', location: 'Jussiape (GST)', responsible: '', supplier: '', due_date: '', attention: 0 },
+        { id: 't', title: 'Proteção TAESA', updated_at: '2026-10-24T10:00:00Z', status: 'concluido', summary: 'Liberado.', location: 'Jussiape (TAESA)', responsible: '', supplier: '', due_date: '', attention: 0 },
+      ],
+      updates: [],
+    });
+    const sections = result.summary.split('\n').filter((line) => line.startsWith('• Subestação'));
+    assert.equal(sections.length, 2, `seções: ${sections.join(' | ')}`);
+    assert.ok(sections.some((line) => line.includes('Jussiape (GST)')));
+    assert.ok(sections.some((line) => line.includes('Jussiape (TAESA)')));
+  });
+});
