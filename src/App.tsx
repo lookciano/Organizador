@@ -852,7 +852,7 @@ type KnowledgeSource = { number: number; kind: string; id: string; item_id?: str
 type KnowledgeBlock = { type: "paragraph" | "list" | "table"; title: string; text: string; items: string[]; columns: string[]; rows: string[][]; source_numbers: number[] };
 type KnowledgeAnswer = { status: "answered" | "unavailable" | "no_evidence"; blocks?: KnowledgeBlock[]; paragraphs: { text: string; source_numbers: number[] }[]; sources: KnowledgeSource[]; warnings: string[]; message?: string };
 type KnowledgeTurn = { question: string; answer: KnowledgeAnswer };
-const knowledgeText = (answer: KnowledgeAnswer) => answer.blocks?.length ? answer.blocks.map(b=>[b.title,b.text,...b.items.map(x=>`• ${x}`),...(b.columns.length ? [b.columns.join(" | "),...b.rows.map(r=>r.join(" | "))] : []),`Fontes: ${b.source_numbers.map(n=>`[${n}]`).join(" ")}`].filter(Boolean).join("\n")).join("\n\n") : answer.paragraphs.map(p=>p.text).join("\n\n");
+const knowledgeText = (answer: KnowledgeAnswer, includeReferences = true) => answer.blocks?.length ? answer.blocks.map(b=>[b.title,b.text,...b.items.map(x=>`• ${x}`),...(b.columns.length ? [b.columns.join(" | "),...b.rows.map(r=>r.join(" | "))] : []),includeReferences ? `Fontes: ${b.source_numbers.map(n=>`[${n}]`).join(" ")}` : ""].filter(Boolean).join("\n")).join("\n\n") : answer.paragraphs.map(p=>p.text).join("\n\n");
 export function SecondBrainView({ projectId, onOpenSource }: { projectId: string; onOpenSource?: (source: KnowledgeSource) => void }) {
   const [question,setQuestion] = useState("");
   const [turns,setTurns] = useState<KnowledgeTurn[]>([]);
@@ -873,7 +873,7 @@ export function SecondBrainView({ projectId, onOpenSource }: { projectId: string
     pending.current=true;setBusy(true);setPendingQuestion(prompt);
     // Context is bounded and never shared between projects. Re-fetch evidence each turn.
     let chars=0;
-    const history=turns.filter(t=>t.answer.status==='answered').slice(-6).map(t=>({question:t.question,answer:knowledgeText(t.answer).slice(0,12000)})).reverse().filter(t=>{chars+=t.question.length+t.answer.length;return chars<=40000;}).reverse();
+    const history=turns.filter(t=>t.answer.status==='answered').slice(-6).map(t=>({question:t.question,answer:knowledgeText(t.answer,false).slice(0,12000)})).reverse().filter(t=>{chars+=t.question.length+t.answer.length;return chars<=40000;}).reverse();
     try {
       const result=await post<KnowledgeAnswer>(`/api/projects/${projectId}/knowledge/ask`,{question:prompt,history});
       if(version===requestVersion.current) {setTurns(old=>[...old,{question:prompt,answer:result}]);setQuestion("");}
