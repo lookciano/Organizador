@@ -1,3 +1,5 @@
+import { useProjectAnalysis, AnalysisProgress, AnalysisCoverage, AnalysisComparisons, comparisonText } from "./ProjectAnalysis";
+import type { Coverage, Comparison } from "./ProjectAnalysis";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { TasksView } from "./ChataskTasks";
@@ -170,7 +172,7 @@ export default function App() {
       {error && <div className="alert error" role="alert">{error}<button onClick={() => setError("")}>×</button></div>}
       {notice && <div className="alert success" role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
       {!project || showCreateProject ? <CreateProject key={showCreateProject?"new":"first"} projects={state.projects} currentProjectId={projectId} onCancel={project?()=>setShowCreateProject(false):undefined} onCreated={(id) => chooseProject(id)} setBusy={setBusy} busy={busy} setError={setError} /> : <div className="content">
-        {view === "brain" && project.id === projectId && <SecondBrainView key={projectId} projectId={projectId} onOpenSource={(source) => { const item = items.find(i => i.id === source.item_id); if(item) void openItem(item); else setView(source.node_id ? "overview" : source.kind === "contexto" ? "context" : source.kind === "fonte" ? "sources" : "items"); }} />}
+        {view === "brain" && project.id === projectId && <SecondBrainView key={projectId} projectId={projectId} onOpenSource={(source) => { const item = items.find(i => i.id === source.item_id); if(item) void openItem(item); else setView(source.kind === "estrutura" ? "structure" : source.kind === "tarefa" ? "tasks" : source.node_id ? "overview" : source.kind === "contexto" ? "context" : source.kind === "fonte" ? "sources" : "items"); }} />}
         {view === "tasks" && project.id === projectId && <TasksView key={projectId} projectId={projectId} owner={project.role === "owner"} />}
         {view === "overview" && <LivingReportView project={project} items={items} nodes={nodes} topicSummaries={state.topicSummaries || []} executiveSummaries={state.executiveSummaries || []} syncedAt={syncedAt} onRefresh={() => refresh(projectId)} onOpen={openItem} onCompose={() => { setView("sources"); setComposerFocus((value) => value + 1); }} />}
         {view === "items" && <ItemsView items={items} nodes={nodes} onOpen={openItem} onManual={() => setShowManual(true)} />}
@@ -850,40 +852,29 @@ function ItemDrawer({ item, nodes, updates, projectId, close, onDone, setError }
 
 type KnowledgeSource = { number: number; kind: string; id: string; item_id?: string; node_id?: string; title: string; text: string; created_at: string; part: number };
 type KnowledgeBlock = { type: "paragraph" | "list" | "table"; title: string; text: string; items: string[]; columns: string[]; rows: string[][]; source_numbers: number[] };
-type KnowledgeAnswer = { status: "answered" | "unavailable" | "no_evidence"; blocks?: KnowledgeBlock[]; paragraphs: { text: string; source_numbers: number[] }[]; sources: KnowledgeSource[]; warnings: string[]; message?: string };
+type KnowledgeAnswer = { coverage?: Coverage; comparisons?: Comparison[]; status: "answered" | "unavailable" | "no_evidence"; blocks?: KnowledgeBlock[]; paragraphs: { text: string; source_numbers: number[] }[]; sources: KnowledgeSource[]; warnings: string[]; message?: string };
 type KnowledgeTurn = { question: string; answer: KnowledgeAnswer };
 const knowledgeText = (answer: KnowledgeAnswer, includeReferences = true) => answer.blocks?.length ? answer.blocks.map(b=>[b.title,b.text,...b.items.map(x=>`• ${x}`),...(b.columns.length ? [b.columns.join(" | "),...b.rows.map(r=>r.join(" | "))] : []),includeReferences ? `Fontes: ${b.source_numbers.map(n=>`[${n}]`).join(" ")}` : ""].filter(Boolean).join("\n")).join("\n\n") : answer.paragraphs.map(p=>p.text).join("\n\n");
 export function SecondBrainView({ projectId, onOpenSource }: { projectId: string; onOpenSource?: (source: KnowledgeSource) => void }) {
   const [question,setQuestion] = useState("");
   const [turns,setTurns] = useState<KnowledgeTurn[]>([]);
-  const [busy,setBusy] = useState(false);
-  const [pendingQuestion,setPendingQuestion] = useState("");
   const [error,setError] = useState("");
-  const requestVersion = useRef(0);
-  const pending = useRef(false);
+  const [originals,setOriginals] = useState(false);
   const composer = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => () => { requestVersion.current++; }, []);
+  const analysis=useProjectAnalysis<KnowledgeAnswer>(projectId,(prompt,result)=>{setTurns(old=>[...old,{question:prompt,answer:result}]);setQuestion("");});
+  const busy=analysis.busy || analysis.pending;
   const ask = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if(pending.current) return;
-    setError("");
+    event.preventDefault();if(busy)return;setError("");
     const prompt=question.trim();
-    if(prompt.length < 3) {setError("Escreva uma instrução com pelo menos três caracteres.");return;}
-    const version = ++requestVersion.current;
-    pending.current=true;setBusy(true);setPendingQuestion(prompt);
-    // Context is bounded and never shared between projects. Re-fetch evidence each turn.
+    if(prompt.length<3){setError("Escreva uma instrução com pelo menos três caracteres.");return;}
     let chars=0;
     const history=turns.filter(t=>t.answer.status==='answered').slice(-6).map(t=>({question:t.question,answer:knowledgeText(t.answer,false).slice(0,12000)})).reverse().filter(t=>{chars+=t.question.length+t.answer.length;return chars<=40000;}).reverse();
-    try {
-      const result=await post<KnowledgeAnswer>(`/api/projects/${projectId}/knowledge/ask`,{question:prompt,history});
-      if(version===requestVersion.current) {setTurns(old=>[...old,{question:prompt,answer:result}]);setQuestion("");}
-    } catch(cause) {if(version===requestVersion.current) setError(cause instanceof Error ? cause.message : "Não foi possível consultar o projeto.");}
-    finally {if(version===requestVersion.current){pending.current=false;setBusy(false);setPendingQuestion("");}}
+    await analysis.start({question:prompt,history,originals});
   };
-  const kindName: Record<string,string> = {assunto:"Assunto",historico:"Histórico",fonte:"Documento ou registro",contexto:"Contexto",sintese:"Síntese do Relatório vivo",resumo:"Resumo executivo"};
-  const prompts=["Crie uma lista de tarefas com base nas sínteses, indicando responsáveis e prazos registrados.","Resuma as principais pendências do projeto.","Me fale tudo sobre o cubículo de Ceará-Mirim."];
+  const kindName: Record<string,string> = {assunto:"Assunto",historico:"Histórico",fonte:"Documento ou registro",contexto:"Contexto",sintese:"Síntese do Relatório vivo",resumo:"Resumo executivo",estrutura:"Estrutura do projeto",projeto:"Projeto",tarefa:"Tarefa da sala"};
+  const prompts=["Leia as sínteses e compare as ações necessárias com as tarefas da sala. Mostre o que já existe, o que precisa atualizar e possíveis novas tarefas.","Resuma as principais pendências do projeto.","Me fale tudo sobre o cubículo de Ceará-Mirim."];
   return <div className="knowledge-view conversation-view">
-    <header className="knowledge-heading"><div><span className="eyebrow">SEGUNDO CÉREBRO</span><h1>Converse com o projeto</h1><p>Peça resumos, comparações ou listas de tarefas a partir dos documentos, registros, sínteses e resumos do Relatório vivo.</p></div><button className="button secondary" disabled={busy || !turns.length} onClick={()=>{setTurns([]);setQuestion("");setError("");composer.current?.focus();}}>Nova conversa</button></header>
+    <header className="knowledge-heading"><div><span className="eyebrow">SEGUNDO CÉREBRO</span><h1>Converse com o projeto</h1><p>Peça resumos e comparações a partir do Relatório vivo, das sínteses e dos resumos. A leitura considera também a estrutura, o contexto e os registros do projeto.</p></div><button className="button secondary" disabled={busy || !turns.length} onClick={()=>{setTurns([]);setQuestion("");setError("");composer.current?.focus();}}>Nova conversa</button></header>
     {!turns.length && !busy && <section className="panel knowledge-welcome"><h2>O que vamos organizar?</h2><p>Escreva o que precisa e como quer receber a resposta. Depois, você pode pedir ajustes na mesma conversa.</p><div className="knowledge-suggestions">{prompts.map(p=><button key={p} onClick={()=>{setQuestion(p);composer.current?.focus();}}>{p}</button>)}</div></section>}
     <div className="knowledge-conversation" aria-label="Conversa com o projeto">
       {turns.map(({question:prompt,answer},turnIndex)=>{
@@ -892,7 +883,7 @@ export function SecondBrainView({ projectId, onOpenSource }: { projectId: string
         return <article className="knowledge-turn" key={turnIndex}>
           <div className="knowledge-user"><small>VOCÊ</small><p>{prompt}</p></div>
           <section className="panel knowledge-answer" aria-label="Resposta do projeto">
-            <div className="knowledge-answer-heading"><span className="eyebrow">ASSISTENTE DO PROJETO</span>{answer.status==='answered' && <CopyTextButton label="Copiar resposta" text={knowledgeText(answer)+"\n\n"+answer.sources.map(s=>`[${s.number}] ${s.title} — ${kindName[s.kind] || s.kind}`).join("\n")} />}</div>
+            <div className="knowledge-answer-heading"><span className="eyebrow">ASSISTENTE DO PROJETO</span>{answer.status==='answered' && <CopyTextButton label="Copiar resposta" text={knowledgeText(answer)+"\n\n"+comparisonText(answer.comparisons || [])+"\n\n"+answer.sources.map(s=>`[${s.number}] ${s.title} — ${kindName[s.kind] || s.kind}`).join("\n")} />}</div>
             {answer.message && <p role="status">{answer.message}</p>}
             {answer.blocks?.length ? answer.blocks.map((b,i)=><div className="knowledge-block" key={i}>
               {b.title && <h2>{b.title}</h2>}{b.text && <p className="knowledge-paragraph">{b.text}</p>}
@@ -900,6 +891,8 @@ export function SecondBrainView({ projectId, onOpenSource }: { projectId: string
               {b.type==='table' && <div className="knowledge-table" tabIndex={0} role="region" aria-label={b.title || "Tabela da resposta"}><table><thead><tr>{b.columns.map((c,j)=><th key={j} scope="col">{c}</th>)}</tr></thead><tbody>{b.rows.map((row,j)=><tr key={j}>{row.map((cell,k)=><td key={k}>{cell}</td>)}</tr>)}</tbody></table></div>}
               {citations(b.source_numbers)}
             </div>) : answer.paragraphs.map((paragraph,i)=><p className="knowledge-paragraph" key={i}>{paragraph.text} {citations(paragraph.source_numbers)}</p>)}
+            {answer.comparisons && <AnalysisComparisons rows={answer.comparisons} citations={citations} />}
+            {answer.coverage && <AnalysisCoverage coverage={answer.coverage} />}
             {answer.warnings.map(w=><p key={w} className="knowledge-note" role="status">{w}</p>)}
             {!!answer.sources.length && <details className="knowledge-evidence"><summary>Fontes e trechos consultados ({answer.sources.length})</summary><p className="muted-text">As datas indicam o registro ou a geração da síntese. Confira as evidências antes de decidir.</p>
               {answer.sources.map(source=><details id={sourceId(source.number)} className="knowledge-source" key={source.number}><summary><strong>[{source.number}] {source.title}</strong><span>{kindName[source.kind] || source.kind} · {source.created_at ? dateTime(source.created_at) : "Data não informada"} · trecho {source.part}</span></summary><p>{source.text}</p>{onOpenSource && <button className="button secondary" onClick={()=>onOpenSource(source)}>{source.item_id?"Abrir assunto e histórico":source.node_id?"Abrir Relatório vivo":source.kind==="contexto"?"Abrir contexto":"Abrir registros do projeto"}</button>}</details>)}
@@ -907,12 +900,13 @@ export function SecondBrainView({ projectId, onOpenSource }: { projectId: string
           </section>
         </article>;
       })}
-      {busy && <div className="knowledge-turn"><div className="knowledge-user"><small>VOCÊ</small><p>{pendingQuestion}</p></div><div className="panel knowledge-answer" role="status">Consultando documentos, registros e resumos para preparar sua resposta…</div></div>}
+      {analysis.pending && analysis.job && <div className="knowledge-turn"><div className="knowledge-user"><small>VOCÊ</small><p>{analysis.job.question}</p></div><AnalysisProgress progress={analysis.job.progress} paused={analysis.job.state==='paused'} onResume={()=>void analysis.resume()} onCancel={()=>void analysis.cancel()}/></div>}
+      {analysis.loading && <p role="status">Preparando a consulta…</p>}
     </div>
     <section className="panel knowledge-question knowledge-composer">
-      <form onSubmit={ask}><label htmlFor="knowledge-question">{turns.length?"Continue a conversa":"O que você quer fazer?"}</label><textarea ref={composer} id="knowledge-question" maxLength={4000} rows={3} value={question} onChange={e=>setQuestion(e.target.value)} placeholder={turns.length?"Agora organize por responsável e destaque o que está sem prazo…":"Ex.: crie uma tabela de tarefas com base nas sínteses, com responsáveis e prazos."} disabled={busy}/><div className="knowledge-send"><small>Listas de tarefas são propostas para revisão. Nenhuma tarefa é cadastrada automaticamente.</small><button className="button primary" disabled={busy} type="submit">{busy?"Preparando resposta…":"Enviar mensagem"}</button></div></form>
-      {error && <p className="form-error" role="alert">{error}</p>}
-      <p className="knowledge-session-note">Esta conversa permanece enquanto a tela estiver aberta. A IA usa até as seis últimas respostas como contexto e consulta novamente as fontes a cada pedido.</p>
+      <form onSubmit={ask}><label htmlFor="knowledge-question">{turns.length?"Continue a conversa":"O que você quer fazer?"}</label><textarea ref={composer} id="knowledge-question" maxLength={4000} rows={3} value={question} onChange={e=>setQuestion(e.target.value)} placeholder={turns.length?"Agora organize por responsável e destaque o que está sem prazo…":"Ex.: crie uma tabela de tarefas com base nas sínteses, com responsáveis e prazos."} disabled={busy}/><label className="check-row analysis-originals"><input type="checkbox" checked={originals} onChange={e=>setOriginals(e.target.checked)} disabled={busy}/>Incluir também os documentos originais nesta consulta</label><div className="knowledge-send"><small>Listas de tarefas são propostas para revisão. Nenhuma tarefa é cadastrada automaticamente.</small><button className="button primary" disabled={busy} type="submit">{busy?"Preparando resposta…":"Enviar mensagem"}</button></div></form>
+      {(error || analysis.error) && <p className="form-error" role="alert">{error || analysis.error}</p>}
+      <p className="knowledge-session-note">Cada consulta lê o conteúdo organizado em etapas. A última análise e seu progresso ficam salvos para você retomar. A conversa usa até seis respostas anteriores como contexto.</p>
     </section>
   </div>;
 }

@@ -1,0 +1,21 @@
+// Synthetic provider only, imported exclusively by the local integration suite.
+const original=globalThis.fetch;
+let failed=false;
+globalThis.fetch=async(url,options={})=>{
+ if(!String(url).startsWith('https://openrouter.ai/api/v1/responses'))return original(url,options);
+ const body=JSON.parse(options.body),name=body.text.format.name;
+ if(name==='executive_summary')return new Response(JSON.stringify({output_text:JSON.stringify({summary:'Resumo executivo sintético.'})}),{headers:{'Content-Type':'application/json'}});
+ const input=JSON.parse(body.input[1].content[0].text);
+ const refs=input.chunks?.map(c=>c.number)||[];
+ let output;
+ if(name==='project_analysis_plan')output={tasks:'compare',objective:input.question};
+ else if(name==='project_analysis_review'){
+  if(input.plan.objective.includes('pausar')&&!failed){failed=true;return new Response('{}',{status:400});}
+  output={complete:true,findings:input.chunks.map(c=>({text:c.kind==='sintese'?'Revisão do TASK-LAST pendente.':'Contexto sintético do projeto A.',source_numbers:[c.number]})),candidates:input.chunks.filter(c=>c.kind==='sintese').map(c=>({action:'Conferir TASK-LAST',location:'Ceará-Mirim',equipment:'Cubículo',responsible:'',due_date:'',source_numbers:[c.number]}))};
+ }
+ else if(name==='project_analysis_compare')output={comparisons:input.candidates.map(c=>({candidate_id:c.id,matches:input.tasks.filter(t=>t.description.includes('TASK-LAST')).map(t=>({task_id:t.id,relation:'existing',reason:'Mesma ação e local registrados.'}))}))};
+ else if(name==='project_analysis_reduce')output={findings:[{text:'Pendência sintetizada do projeto A.',source_numbers:[...new Set(input.findings.flatMap(f=>f.source_numbers))]}]};
+ else if(name==='knowledge_answer')output={blocks:[{type:'paragraph',title:'Análise do projeto',text:'Confira a comparação com a sala e as evidências do Relatório vivo.',items:[],columns:[],rows:[],source_numbers:[input.evidence[0].number]}]};
+ else throw new Error('Unexpected synthetic provider operation');
+ return new Response(JSON.stringify({output_text:JSON.stringify(output)}),{headers:{'Content-Type':'application/json'}});
+};

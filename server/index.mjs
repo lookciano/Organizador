@@ -1,3 +1,4 @@
+import { registerAnalysisRoutes } from './analysis-jobs.mjs';
 import express from 'express';
 import { registerChataskRoutes } from './chatask.mjs';
 import { registerSecondBrainRoutes } from './second-brain.mjs';
@@ -111,6 +112,7 @@ async function membership(req, res, next) {
 }
 
 registerSecondBrainRoutes(app, requireUser, membership, run);
+registerAnalysisRoutes(app, requireUser, membership, run, readCookie);
 
 const ownerOnly = (req, res, next) => req.role === 'owner' ? next() : fail(res, 403, 'Somente o responsável pelo projeto pode alterar esta configuração');
 

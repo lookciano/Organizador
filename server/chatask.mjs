@@ -39,6 +39,18 @@ export async function chataskCall(method, input, token, transport = fetch) {
 export function publicTask(t) {
   return {id:t.id,taskNumber:t.taskNumber,chatRoomId:t.chatRoomId,description:t.description,assignedToName:t.assignedToName || '',dueDate:t.dueDate,status:t.status,priority:t.priority,updatedAt:t.updatedAt};
 }
+// Shared, read-only project access. No personal task endpoint or credential leaves this module.
+export async function readChataskProjectTasks(projectId, userId, session, database = db(), transport = fetch) {
+  const sessionHash=digest(session).toString('hex');
+  const [[row]]=await database.execute('SELECT c.* FROM chatask_connections c JOIN sessions s ON s.token_hash=c.session_hash WHERE c.session_hash=? AND c.user_id=? AND s.expires_at>?',[sessionHash,userId,new Date().toISOString()]);
+  if(!row)throw fault(401,'Conecte sua conta do Chatask para comparar as tarefas da sala.');
+  const [[link]]=await database.execute('SELECT room_id,room_name FROM chatask_project_rooms WHERE project_id=?',[projectId]);
+  if(!link)throw fault(409,'Vincule a sala do Chatask a este projeto para comparar as tarefas.');
+  let token;try{token=openSession(row.encrypted_token,session,userId);}catch{throw fault(401,'Conecte novamente sua conta do Chatask.');}
+  const tasks=await chataskCall('tasks.list',{chatRoomId:link.room_id},token,transport);
+  if(!Array.isArray(tasks) || tasks.some(t=>Number(t.chatRoomId)!==Number(link.room_id)))throw fault(502,'Não foi possível confirmar a lista de tarefas desta sala.');
+  return {room:{id:Number(link.room_id),name:link.room_name},tasks:tasks.map(publicTask),read_at:new Date().toISOString()};
+}
 const positive = n => Number.isSafeInteger(n) && n > 0;
 export function registerChataskRoutes(app, requireUser, membership, ownerOnly, readCookie) {
   const safe = handler => async(req,res,next)=>{try{await handler(req,res);}catch(error){if(error.status)res.status(error.status).json({error:error.message});else next(error);}};

@@ -65,11 +65,12 @@ test('PR #1: TiDB migration, authorization and regression', { skip: !target, tim
     if (server && server.exitCode === null) { server.kill('SIGTERM'); await once(server, 'exit'); }
   }
   t.after(stop);
-  async function start(entrypoint = 'server/index.mjs') {
-    server = spawn(process.execPath, ['--import', './tests/chatask-upstream.mock.mjs', entrypoint], { env: {
+  async function start(entrypoint = 'server/index.mjs', analysis = false) {
+    server = spawn(process.execPath, ['--import', './tests/chatask-upstream.mock.mjs', '--import', './tests/analysis-provider.mock.mjs', entrypoint], { env: {
       PATH: process.env.PATH, NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS,
       DATABASE_URL: target, BOOTSTRAP_EMAIL: 'owner-a@example.invalid', BOOTSTRAP_PASSWORD: password,
       HOST: '127.0.0.1', PORT: String(port), APP_ORIGIN: origin,
+      ...(analysis?{OPENROUTER_API_KEY:'synthetic-provider-key',ANALYSIS_FIXTURE:'1'}:{}),
     }, stdio: ['ignore', 'pipe', 'pipe'] });
     server.stdout.on('data', c => { serverOutput += c; }); server.stderr.on('data', c => { serverOutput += c; });
     for (let tries = 0; tries < 200; tries++) {
@@ -83,7 +84,7 @@ test('PR #1: TiDB migration, authorization and regression', { skip: !target, tim
     await start();
     assert.deepEqual(await fingerprints(), before);
     const [afterTables] = await admin.query('SHOW TABLES');
-    assert.deepEqual(afterTables.map(row => Object.values(row)[0]).filter(name => !tableNames.includes(name)), ['chatask_connections', 'chatask_operations', 'chatask_project_rooms', 'second_brain_tasks']);
+    assert.deepEqual(afterTables.map(row => Object.values(row)[0]).filter(name => !tableNames.includes(name)), ['chatask_connections', 'chatask_operations', 'chatask_project_rooms', 'knowledge_analyses', 'knowledge_analysis_chunks', 'second_brain_tasks']);
   });
   await t.test('second startup is idempotent and keeps existing users and rows', async () => {
     await stop(); await start(); assert.deepEqual(await fingerprints(), before);
@@ -278,12 +279,80 @@ test('PR #1: TiDB migration, authorization and regression', { skip: !target, tim
     const result=await request('/api/projects/project-a/knowledge/ask',{method:'POST',body:{question:'Telescópio orbital plutoniano'}});
     assert.equal(result.status,200);assert.equal(result.data.status,'no_evidence');assert.deepEqual(result.data.sources,[]);
   });
+
+  const analysisBase='/api/projects/project-a/knowledge/analyses';
+  const advanceAnalysis=async(id,untilComplete=true)=>{
+    for(let i=0;i<150;i++){
+      const value=await request(`${analysisBase}/${id}`);
+      assert.equal(value.status,200);
+      if(value.data.state==='paused')t.diagnostic('Synthetic analysis paused as expected or awaiting test inspection.');
+      if(value.data.state==='complete'||value.data.state==='paused')return value.data;
+      if(value.data.state==='ready')await request(`${analysisBase}/${id}/advance`,{method:'POST',body:{}});
+      if(!untilComplete&&value.data.progress.completed>0)return value.data;
+      await new Promise(resolve=>setTimeout(resolve,20));
+    }
+    assert.fail('Analysis did not finish');
+  };
+  let analysisId;
+  await t.test('analysis jobs protect project, user, origin and idempotent creation',async()=>{
+    await stop();await start('server/index.mjs',true);
+    await request('/api/chatask/connection',{method:'POST',body:{email:'fixture@example.invalid',password:'fixture-password'}});
+    await admin.execute('INSERT INTO topic_summaries (node_id,project_id,revision,summary,important_change,analysis_status,generated_at) VALUES (?,?,?,?,?,?,?)',['parent-a','project-a','synthetic','Síntese completa. '.repeat(8000)+'TASK-LAST','','completed',stamp]);
+    analysisId=randomUUID();const body={id:analysisId,question:'Leia todas as sínteses e compare as tarefas',history:[]};
+    assert.equal((await request(analysisBase,{method:'POST',body,user:''})).status,401);
+    assert.equal((await request(analysisBase,{method:'POST',body,user:'owner-b'})).status,403);
+    assert.equal((await request(analysisBase,{method:'POST',body,requestOrigin:'https://untrusted.example.invalid'})).status,403);
+    assert.equal((await request(analysisBase,{method:'POST',body})).status,201);
+    assert.equal((await request(analysisBase,{method:'POST',body})).status,200);
+    assert.equal((await request(`${analysisBase}/${analysisId}`,{user:'member-a'})).status,404);
+    assert.equal((await request(`${analysisBase}/${analysisId}/advance`,{user:'member-a',method:'POST',body:{}})).status,404);
+    assert.equal((await request(analysisBase,{method:'POST',body:{...body,id:randomUUID()}})).status,409);
+  });
+  await t.test('full corpus analysis survives restart, reads final passages and compares the last remote task batch',async()=>{
+    const partial=await advanceAnalysis(analysisId,false);assert.ok(partial.progress.completed>0);assert.ok(partial.progress.total>24);
+    await stop();await admin.execute("UPDATE knowledge_analyses SET lease_until=? WHERE id=? AND state='working'",['2000-01-01',analysisId]);await start('server/index.mjs',true);
+    const result=await advanceAnalysis(analysisId);assert.equal(result.state,'complete');assert.equal(result.progress.completed,result.progress.total);
+    assert.equal(result.result.coverage.task_count,300);assert.equal(result.result.coverage.comparison_complete,true);
+    assert.equal(result.result.comparisons.length,1);assert.equal(result.result.comparisons[0].classification,'existing');assert.equal(result.result.comparisons[0].matches[0].task_id,1300);
+    assert.ok(result.result.sources.some(s=>s.text.includes('TASK-LAST')));assert.ok(result.result.sources.every(s=>s.id!=='source-b'&&s.id!=='item-b'));
+    const [[remaining]]=await admin.execute('SELECT COUNT(*) AS n FROM knowledge_analysis_chunks WHERE analysis_id=? AND reviewed=0',[analysisId]);assert.equal(remaining.n,0);
+    const after=await request(`${analysisBase}/${analysisId}/advance`,{method:'POST',body:{}});assert.equal(after.data.state,'complete');
+    assert.doesNotMatch(JSON.stringify(result),/synthetic-provider-key|fixture-token|encrypted_token/);
+  });
+  await t.test('unavailable room access remains incomplete and never produces false new tasks',async()=>{
+    const id=randomUUID();await request(analysisBase,{user:'member-a',method:'POST',body:{id,question:'Compare as tarefas com as sínteses'}});
+    for(let i=0;i<150;i++){
+      const value=(await request(`${analysisBase}/${id}`,{user:'member-a'})).data;
+      if(value.state==='complete'){
+        assert.equal(value.result.coverage.comparison_complete,false);assert.ok(value.result.comparisons.length>0);assert.ok(value.result.comparisons.every(c=>c.classification==='not_compared'));return;
+      }
+      assert.notEqual(value.state,'paused');
+      if(value.state==='ready')await request(`${analysisBase}/${id}/advance`,{user:'member-a',method:'POST',body:{}});
+      await new Promise(resolve=>setTimeout(resolve,20));
+    }
+    assert.fail('Member analysis did not finish');
+  });
+  await t.test('provider failure pauses honestly; resume and concurrent advance do not duplicate results',async()=>{
+    const id=randomUUID();await request(analysisBase,{method:'POST',body:{id,question:'Comparar e pausar uma vez para teste'}});
+    const paused=await advanceAnalysis(id);assert.equal(paused.state,'paused');assert.equal(paused.result,null);
+    await Promise.all(Array.from({length:5},()=>request(`${analysisBase}/${id}/advance`,{method:'POST',body:{}})));
+    const result=await advanceAnalysis(id);assert.equal(result.state,'complete');assert.equal(result.result.comparisons.length,1);
+    const [[row]]=await admin.execute('SELECT SUM(reviewed) AS read_count,COUNT(*) AS total FROM knowledge_analysis_chunks WHERE analysis_id=?',[id]);assert.equal(Number(row.read_count),row.total);
+  });
+  await t.test('cancellation invalidates work and lets a new analysis start',async()=>{
+    const id=randomUUID();await request(analysisBase,{method:'POST',body:{id,question:'Análise para encerrar'}});
+    assert.equal((await request(`${analysisBase}/${id}/cancel`,{method:'POST',body:{}})).status,200);
+    assert.equal((await request(`${analysisBase}/${id}/advance`,{method:'POST',body:{}})).data.state,'cancelled');
+    await admin.execute('DELETE FROM topic_summaries WHERE project_id=?',['project-a']);
+  });
   await t.test('logout invalidates the existing session', async () => {
     assert.equal((await request('/api/auth/logout',{method:'POST',body:{}})).status,200);
     assert.equal((await request(tasksPath)).status,401);
   });
   await t.test('the previous application starts with the added table and preserves all tasks on rollback', async () => {
     await stop();
+    await admin.execute('DELETE FROM topic_summaries WHERE project_id=?',['project-a']);
+    await admin.execute('DELETE FROM topic_executive_summaries WHERE project_id=?',['project-a']);
     const saved = await fingerprints();
     const [savedTasks] = await admin.query('SELECT * FROM second_brain_tasks');
     await mkdir('node_modules/.cache', {recursive:true});

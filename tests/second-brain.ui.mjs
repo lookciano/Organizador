@@ -25,7 +25,14 @@ async function input(element, value) {
   });
 }
 async function mount(t, fetchMock, Component=SecondBrainView, props={}) {
-  const originalFetch = globalThis.fetch; globalThis.fetch = fetchMock;
+  const originalFetch = globalThis.fetch; globalThis.fetch = Component===SecondBrainView ? async(url,options)=>{
+    if(url.endsWith('/latest'))return reply({analysis:null});
+    const response=await fetchMock(url,options);
+    if(!response.ok)return response;
+    const data=await response.json();
+    if(data.state)return reply(data);
+    return reply({id:JSON.parse(options?.body || '{}').id || 'job',question:JSON.parse(options?.body || '{}').question,state:'complete',progress:{phase:'complete'},result:data});
+  } : fetchMock;
   const root = createRoot(document.getElementById('root'));
   t.after(async () => { await act(() => root.unmount()); globalThis.fetch = originalFetch; });
   await act(() => root.render(createElement(Component, { projectId:'a',items:[],key:'a',...props })));
@@ -40,7 +47,7 @@ test('natural-language question uses the AI endpoint, shows citations and has no
  let called;
  await mount(t,async(url,options)=>{called={url,body:JSON.parse(options.body)};return reply({status:'answered',paragraphs:[{text:'O cubículo foi entregue.',source_numbers:[1]}],sources:[{number:1,id:'a',kind:'assunto',title:'Cubículo Ceará-Mirim',text:'Entregue.',created_at:'2026-11-01',part:1}],warnings:[]});});
  await ask('me fala tudo sobre o cubículo de Ceara Mirim');
- assert.equal(called.url,'/api/projects/a/knowledge/ask');assert.match(called.body.question,/Ceara Mirim/);
+ assert.equal(called.url,'/api/projects/a/knowledge/analyses');assert.match(called.body.question,/Ceara Mirim/);
  assert.match(document.body.textContent,/O cubículo foi entregue/);assert.equal(document.querySelector('a').getAttribute('href'),'#knowledge-source-1');
  assert.equal(document.querySelector('[aria-label="Nova tarefa"]'),null);
 });
@@ -124,7 +131,7 @@ test('conversation renders a table and sends a bounded follow-up without losing 
  await act(()=>document.querySelector('a').click());assert.equal(document.querySelector('.knowledge-evidence').open,true);assert.equal(document.querySelector('.knowledge-source').open,true);
  await ask('Agora organize por responsável');assert.equal(calls[1].body.history.length,1);assert.match(calls[1].body.history[0].answer,/Maria/);assert.doesNotMatch(calls[1].body.history[0].answer,/Fontes:|\[1\]/);assert.equal(document.querySelectorAll('table').length,2);
  assert.equal(document.querySelectorAll('#knowledge-source-1').length,1);assert.ok(document.querySelector('#knowledge-source-1-1'));
- assert.ok(calls.every(c=>c.url==='/api/projects/a/knowledge/ask'));
+ assert.ok(calls.every(c=>c.url==='/api/projects/a/knowledge/analyses'));
  await act(()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='Nova conversa').click());
  assert.equal(document.querySelectorAll('table').length,0);await ask('Outra pergunta');assert.deepEqual(calls[2].body.history,[]);
 });
@@ -135,4 +142,21 @@ test('failed follow-up keeps previous answers and the unsent instruction for ret
 test('model content is rendered as text and cannot inject HTML or executable links',async t=>{
  await mount(t,async()=>reply({status:'answered',blocks:[{type:'list',title:'<script>alert(1)</script>',text:'',items:['<img src=x onerror=alert(1)>'],columns:[],rows:[],source_numbers:[1]}],paragraphs:[],sources:[],warnings:[]}));
  await ask('Liste as pendências');assert.equal(document.querySelector('script'),null);assert.equal(document.querySelector('img'),null);assert.match(document.body.textContent,/<script>/);
+});
+test('paused analysis shows saved progress and resumes without creating a second job',async t=>{
+ const calls=[];
+ await mount(t,async(url,options)=>{
+   calls.push(url);
+   if(url.endsWith('/advance'))return reply({id:'saved',question:'Compare todas as sínteses',state:'complete',progress:{phase:'complete'},result:{status:'answered',paragraphs:[{text:'Comparação retomada.',source_numbers:[1]}],sources:[],warnings:[]}});
+   return reply({id:'saved',question:'Compare todas as sínteses',state:'paused',progress:{phase:'review',completed:22,total:80,error:'Progresso salvo.'},result:null});
+ });
+ await ask('Compare todas as sínteses');assert.match(document.body.textContent,/22 de 80/);assert.match(document.body.textContent,/Análise pausada/);
+ await act(()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='Retomar análise').click());
+ assert.match(document.body.textContent,/Comparação retomada/);assert.equal(calls.filter(u=>u.endsWith('/analyses')).length,1);
+});
+test('coverage and every candidate remain available beyond the first visible page',async t=>{
+ const comparisons=Array.from({length:25},(_,i)=>({id:i+1,action:`Proposta ${i+1}`,location:'Ceará-Mirim',equipment:'Cubículo',responsible:'',due_date:'',source_numbers:[1],classification:'not_compared',matches:[]}));
+ await mount(t,async()=>reply({status:'answered',paragraphs:[],sources:[],warnings:[],comparisons,coverage:{snapshot_at:'2026-11-01T12:00:00Z',counts:{sintese:305},issues:[{id:'a',kind:'fonte',title:'Ata pendente',message:'Ainda não organizada.'}],task_status:'unavailable',task_count:null,task_room:'',tasks_read_at:'',task_message:'Conecte sua conta.',originals_included:false,chunks_read:500,chunks_total:500,comparison_requested:true,comparison_complete:false}}));
+ await ask('Compare todas as sínteses');assert.equal(document.querySelectorAll('.analysis-candidate').length,20);assert.match(document.body.textContent,/Comparação incompleta/);assert.match(document.body.textContent,/500 de 500/);assert.match(document.body.textContent,/Sínteses: 305/);
+ await act(()=>[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Mostrar mais propostas')).click());assert.equal(document.querySelectorAll('.analysis-candidate').length,25);assert.match(document.body.textContent,/Proposta 25/);assert.doesNotMatch(document.body.textContent,/Possível nova tarefa/);
 });
