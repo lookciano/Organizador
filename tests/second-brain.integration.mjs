@@ -310,6 +310,10 @@ test('PR #1: TiDB migration, authorization and regression', { skip: !target, tim
   });
   await t.test('full corpus analysis survives restart, reads final passages and compares the last remote task batch',async()=>{
     const partial=await advanceAnalysis(analysisId,false);assert.ok(partial.progress.completed>0);assert.ok(partial.progress.total>24);
+    const [[savedProgress]]=await admin.execute('SELECT progress_json FROM knowledge_analyses WHERE id=?',[analysisId]);
+    const saved=JSON.parse(savedProgress.progress_json);assert.equal(saved.rawSupport,true);assert.ok(saved.supportNotes.some(n=>n.text.includes('Teste contexto a')));
+    const [supportRead]=await admin.execute('SELECT source_json,reviewed FROM knowledge_analysis_chunks WHERE analysis_id=?',[analysisId]);
+    assert.ok(supportRead.filter(r=>JSON.parse(r.source_json).kind==='contexto').every(r=>r.reviewed===1));
     await stop();await admin.execute("UPDATE knowledge_analyses SET lease_until=? WHERE id=? AND state='working'",['2000-01-01',analysisId]);await start('server/index.mjs',true);
     const result=await advanceAnalysis(analysisId);assert.equal(result.state,'complete');assert.equal(result.progress.completed,result.progress.total);
     assert.equal(result.result.coverage.history_included,false);assert.equal(result.result.coverage.originals_included,false);

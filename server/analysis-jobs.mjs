@@ -58,6 +58,9 @@ async function performStep(row,token,session) {
     p.coverage={...corpus.coverage,task_status:!needsTasks?'not_requested':taskSnapshot.available?'read':'unavailable',task_count:taskSnapshot.available?taskSnapshot.tasks.length:null,task_room:taskSnapshot.room?.name||'',tasks_read_at:taskSnapshot.read_at||'',revision:revisionOf(chunks)};
     p.supportPending=chunks.filter(c=>['projeto','estrutura','contexto'].includes(c.kind)).map(c=>c.number);p.supportNotes=[];
     p.tasks=taskSnapshot;p.total=chunks.length;p.completed=0;p.phase='context';
+    const context=chunks.filter(c=>p.supportPending.includes(c.number)).map(c=>({text:`${c.title}\n${c.text}`,source_numbers:[c.number]}));
+    // Small context travels intact with the summaries; no preliminary LLM rewrite.
+    if(p.supportPending.length<chunks.length&&JSON.stringify(context).length<=48000){p.supportNotes=context;p.rawSupport=true;p.phase='review';}
     await checkpoint(row.id,token,p,async sql=>{
       await sql.execute('DELETE FROM knowledge_analysis_chunks WHERE analysis_id=?',[row.id]);
       for(let start=0;start<chunks.length;start+=50){
@@ -69,8 +72,9 @@ async function performStep(row,token,session) {
   if(p.phase==='review'||p.phase==='context') {
     const isContext=p.phase==='context';
     if(isContext&&!p.supportPending.length){p.phase='support_reduce';await checkpoint(row.id,token,p);return;}
-    const scope=isContext?` AND sequence_number IN (${p.supportPending.map(()=>'?').join(',')})`:'';
-    const [pending]=await db().execute(`SELECT sequence_number,source_json,body FROM knowledge_analysis_chunks WHERE analysis_id=? AND reviewed=0${scope} ORDER BY sequence_number LIMIT 64`,[row.id,...(isContext?p.supportPending:[])]);
+    const scoped=isContext||Boolean(p.rawSupport&&p.supportPending.length);
+    const scope=scoped?` AND sequence_number ${isContext?'IN':'NOT IN'} (${p.supportPending.map(()=>'?').join(',')})`:'';
+    const [pending]=await db().execute(`SELECT sequence_number,source_json,body FROM knowledge_analysis_chunks WHERE analysis_id=? AND reviewed=0${scope} ORDER BY sequence_number LIMIT 64`,[row.id,...(scoped?p.supportPending:[])]);
     if(!pending.length){p.phase=isContext?'support_reduce':'gather';await checkpoint(row.id,token,p);return;}
     const chunks=batchBySize(pending.map(r=>({...json(r.source_json),number:r.sequence_number,text:r.body})),p.reviewSize)[0];
     const value=await reviewProjectBatch(p.plan,chunks,isContext?[]:p.supportNotes);
@@ -90,9 +94,11 @@ async function performStep(row,token,session) {
       const evidenceIds=new Set(chunks.filter(c=>!['projeto','estrutura','contexto','tarefa'].includes(c.kind)).map(c=>c.number));
       if(findings.candidates.some(c=>!c.source_numbers.some(n=>evidenceIds.has(n))))throw new Error('Proposta sem evidência válida.');
     }
-    p.completed+=chunks.length;
+    const reviewed=[...chunks.map(c=>c.number),...(!isContext&&p.rawSupport?p.supportPending:[])];
+    if(!isContext&&p.rawSupport)p.supportPending=[];
+    p.completed+=reviewed.length;
     await checkpoint(row.id,token,p,async sql=>{
-      await sql.execute(`UPDATE knowledge_analysis_chunks SET reviewed=1,findings_json=NULL WHERE analysis_id=? AND sequence_number IN (${chunks.map(()=>'?').join(',')})`,[row.id,...chunks.map(c=>c.number)]);
+      await sql.execute(`UPDATE knowledge_analysis_chunks SET reviewed=1,findings_json=NULL WHERE analysis_id=? AND sequence_number IN (${reviewed.map(()=>'?').join(',')})`,[row.id,...reviewed]);
       await sql.execute('UPDATE knowledge_analysis_chunks SET findings_json=? WHERE analysis_id=? AND sequence_number=?',[JSON.stringify(findings),row.id,chunks[0].number]);
     });return;
   }
@@ -115,7 +121,7 @@ async function performStep(row,token,session) {
   }
   if(p.phase==='reduce'||p.phase==='support_reduce') {
     const support=p.phase==='support_reduce',key=support?'supportNotes':'findings';
-    if(JSON.stringify(p[key]).length<=(support?16000:22000)){p.phase=support?'review':'answer';await checkpoint(row.id,token,p);return;}
+    if(JSON.stringify(p[key]).length<=(support?48000:22000)){p.phase=support?'review':'answer';await checkpoint(row.id,token,p);return;}
     if(!p.reduction){p.reduction={batches:batchBySize(p[key],16000),notes:[],index:0,before:JSON.stringify(p[key]).length};}
     const r=p.reduction,input=r.batches[r.index],output=await reduceProjectFindings(support?{...p.plan,objective:'Preserve as relações, definições e orientações do contexto e da estrutura para interpretar as sínteses. '+p.plan.objective}:p.plan,input);
     const checked=validateFindings({complete:true,findings:output.findings,candidates:[]},input.flatMap(f=>f.source_numbers));
@@ -152,7 +158,8 @@ async function advance(row,token,session) {
   heartbeat.unref();
   try{await performStep(row,token,session);console.info('project_analysis_step:',phase,'duration_ms',Date.now()-started);}catch(error){
     // Provider responses may contain private text: log categories only.
-    const category=/^[A-Z_0-9]+$/.test(error.code||'')?error.code:error.name==='TimeoutError'?'PROVIDER_TIMEOUT':/Falha na análise/.test(error.message)?'PROVIDER_ERROR':/IA.*(JSON|interrompeu|concluiu)/.test(error.message)?'PROVIDER_INCOMPLETE':'VALIDATION_OR_STEP_ERROR';
+    const validationCodes={'Evidência inválida na análise.':'INVALID_EVIDENCE','Proposta sem evidência válida.':'INVALID_CANDIDATE','Etapa muito extensa. Reduza o lote e retome.':'OVERSIZED_OUTPUT','Reduction discarded findings':'EMPTY_REDUCTION','Reduction did not converge':'REDUCTION_NOT_SMALLER','Invalid analysis plan':'INVALID_PLAN','Incomplete coverage':'INCOMPLETE_COVERAGE','Incomplete single passage':'INCOMPLETE_PASSAGE'};
+    const category=/^[A-Z_0-9]+$/.test(error.code||'')?error.code:validationCodes[error.message]|| (error.name==='TimeoutError'?'PROVIDER_TIMEOUT':/Falha na análise/.test(error.message)?'PROVIDER_ERROR':/IA.*(JSON|interrompeu|concluiu)/.test(error.message)?'PROVIDER_INCOMPLETE':'VALIDATION_OR_STEP_ERROR');
     console.warn('project_analysis_paused:',phase,category,'duration_ms',Date.now()-started);
     const p=json(row.progress_json);p.error='Esta etapa não foi concluída. O progresso anterior foi salvo; tente retomar.';
     await db().execute('UPDATE knowledge_analyses SET state=?,progress_json=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=? AND state=? AND lease_token=?',['paused',JSON.stringify(p),now(),row.id,'working',token]).catch(()=>{});
