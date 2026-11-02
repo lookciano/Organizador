@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {loadProjectCorpus,readAllPages,topicPaths,makeChunks,batchBySize,validateFindings,uniqueCandidates,validateMatches,finishComparisons} from './project-analysis.mjs';
-import {reportFitsContext} from './ai.mjs';
+import {reportFitsContext,reportReasoningOptions} from './ai.mjs';
 import {publicAnalysis} from './analysis-jobs.mjs';
 
 test('full pagination visits records after old 300-record limit and scopes each page',async()=>{
@@ -85,4 +85,14 @@ test('direct reading requires a verified capacity with reserved space and respec
  assert.equal(reportFitsContext(400000,{context_length:1048576,top_provider:{context_length:128000,max_completion_tokens:16000}}),false);
  assert.equal(reportFitsContext(400000,null),false);assert.equal(reportFitsContext(400000,{context_length:1048576,top_provider:{max_completion_tokens:4096}}),false);
  assert.equal(reportFitsContext(900000,{context_length:1048576}),false);
+});
+
+test('direct reports disable extra reasoning only when selected model explicitly permits it',()=>{
+ const model={supported_parameters:['reasoning'],reasoning:{mandatory:false,supported_efforts:['low','none']}};
+ assert.deepEqual(reportReasoningOptions(model,true),{enabled:false});
+ assert.deepEqual(reportReasoningOptions(model,false),{effort:'low'});
+ assert.deepEqual(reportReasoningOptions({...model,reasoning:{mandatory:true,supported_efforts:['low']}},true),{effort:'low'});
+ assert.deepEqual(reportReasoningOptions({...model,reasoning:{mandatory:false,supported_efforts:['low']}},true),{effort:'low'});
+ assert.equal(reportReasoningOptions(null,true),undefined);
+ assert.equal(reportFitsContext(400000,{context_length:1048576,top_provider:{max_completion_tokens:10000}}),false);
 });
