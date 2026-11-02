@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { db } from './db.mjs';
-import { structurePaths, summarizeTopicHistory, incrementalCutoff } from './ai.mjs';
+import { structurePaths, summarizeTopicHistory } from './ai.mjs';
 import { loadProjectContext, selectProjectContext } from './project-context.mjs';
 import { prepareExecutiveSummaries } from './executive-summaries.mjs';
 import { buildStationRegistry } from './stations.mjs';
