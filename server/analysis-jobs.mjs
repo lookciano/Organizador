@@ -2,8 +2,21 @@ import { randomUUID } from 'node:crypto';
 import { db } from './db.mjs';
 import { readChataskProjectTasks } from './chatask.mjs';
 import { validateConversation } from './knowledge.mjs';
-import { loadProjectCorpus,makeChunks,batchBySize,validateFindings,uniqueCandidates,validateMatches,finishComparisons,taskDocuments,revisionOf,validateKnowledgeBlocks } from './project-analysis.mjs';
+import { loadProjectCorpus,makeChunks,batchBySize,groupBatchByDocument,validateFindings,uniqueCandidates,validateMatches,finishComparisons,taskDocuments,revisionOf,validateKnowledgeBlocks } from './project-analysis.mjs';
 import { planProjectAnalysis,reviewProjectBatch,compareProjectTasks,reduceProjectFindings,answerKnowledgeQuestion,canAnswerProjectDirectly } from './ai.mjs';
+import { buildStationRegistry } from './stations.mjs';
+
+// O registro canônico é a lista fechada de locais que a IA deve usar. Muda pouco,
+// então fica em memória por alguns minutos em vez de uma consulta por etapa.
+const stationRegistryCache=new Map();
+async function stationRegistryFor(projectId){
+  const hit=stationRegistryCache.get(projectId);
+  if(hit&&Date.now()-hit.at<300000)return hit.value;
+  const [nodes]=await db().execute('SELECT id,parent_id,title FROM structure_nodes WHERE project_id=? AND archived=0',[projectId]);
+  const value=buildStationRegistry(nodes);
+  stationRegistryCache.set(projectId,{at:Date.now(),value});
+  return value;
+}
 
 const now=()=>new Date().toISOString();
 const json=value=>typeof value==='string'?JSON.parse(value):value;
@@ -77,7 +90,7 @@ async function performStep(row,token,session) {
   if(p.phase==='answer_direct') {
     const sources=await sourcesFor(row.id),coverage={...p.coverage,read_method:'direct',chunks_read:p.total,chunks_total:p.total,comparison_requested:false,comparison_complete:false};
     let generated;
-    try{generated=await answerKnowledgeQuestion(row.question,sources,history,coverage,true);}
+    try{generated=await answerKnowledgeQuestion(row.question,sources,history,coverage,true,await stationRegistryFor(row.project_id));}
     catch(error){
       if(!/A IA (não concluiu|devolveu JSON incompleto)/.test(error.message))throw error;
       generated={complete:false};
@@ -96,8 +109,8 @@ async function performStep(row,token,session) {
     const scope=scoped?` AND sequence_number ${isContext?'IN':'NOT IN'} (${p.supportPending.map(()=>'?').join(',')})`:'';
     const [pending]=await db().execute(`SELECT sequence_number,source_json,body FROM knowledge_analysis_chunks WHERE analysis_id=? AND reviewed=0${scope} ORDER BY sequence_number LIMIT 64`,[row.id,...(scoped?p.supportPending:[])]);
     if(!pending.length){p.phase=isContext?'support_reduce':'gather';await checkpoint(row.id,token,p);return;}
-    const chunks=batchBySize(pending.map(r=>({...json(r.source_json),number:r.sequence_number,text:r.body})),p.reviewSize)[0];
-    const value=await reviewProjectBatch(p.plan,chunks,isContext?[]:p.supportNotes);
+    const chunks=groupBatchByDocument(pending.map(r=>({...json(r.source_json),number:r.sequence_number,text:r.body})),p.reviewSize);
+    const value=await reviewProjectBatch(p.plan,chunks,isContext?[]:p.supportNotes,await stationRegistryFor(row.project_id));
     if(value.complete!==true){
       if(chunks.length>1){p.reviewSize=Math.max(1000,Math.floor(p.reviewSize/2));await checkpoint(row.id,token,p);return;}
       const c=chunks[0];if(c.text.length<=1000)throw new Error('Incomplete single passage');
@@ -159,7 +172,7 @@ async function performStep(row,token,session) {
     const comparisons=p.plan.tasks==='none'?[]:finishComparisons(p.candidates,p.matches,p.tasks.tasks,p.plan.tasks==='compare'&&p.tasks.available&&p.compareIndex===p.compareTotal);
     const coverage={...p.coverage,chunks_read:p.completed,chunks_total:p.total,comparison_requested:p.plan.tasks==='compare',comparison_complete:p.plan.tasks==='compare'&&p.tasks.available&&p.compareIndex===p.compareTotal};
     const evidence=p.findings.map(f=>({number:f.source_numbers[0],source_numbers:f.source_numbers,kind:'nota',title:'Notas da leitura do projeto',text:f.text}));
-    const generated=evidence.length?await answerKnowledgeQuestion(row.question,evidence,history,coverage):{blocks:[]};
+    const generated=evidence.length?await answerKnowledgeQuestion(row.question,evidence,history,coverage,false,await stationRegistryFor(row.project_id)):{blocks:[]};
     const blocks=evidence.length?validateKnowledgeBlocks(generated,sources):[];
     const cited=new Set([...blocks.flatMap(b=>b.source_numbers),...comparisons.flatMap(c=>c.source_numbers)]);
     const warnings=[];
