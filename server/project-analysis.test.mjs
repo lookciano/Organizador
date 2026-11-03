@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {loadProjectCorpus,readAllPages,topicPaths,makeChunks,batchBySize,validateFindings,uniqueCandidates,validateMatches,finishComparisons} from './project-analysis.mjs';
-import {reportFitsContext,reportReasoningOptions} from './ai.mjs';
+import {reportFitsContext,reportReasoningOptions,reviewProjectBatch,compareProjectTasks} from './ai.mjs';
 import {publicAnalysis} from './analysis-jobs.mjs';
 
 test('full pagination visits records after old 300-record limit and scopes each page',async()=>{
@@ -95,4 +95,26 @@ test('direct reports disable extra reasoning only when selected model explicitly
  assert.deepEqual(reportReasoningOptions({...model,reasoning:{mandatory:false,supported_efforts:['low']}},true),{effort:'low'});
  assert.equal(reportReasoningOptions(null,true),undefined);
  assert.equal(reportFitsContext(400000,{context_length:1048576,top_provider:{max_completion_tokens:10000}}),false);
+});
+
+test('extraction and consolidation disable reasoning while task comparison keeps it',async()=>{
+ const previousFetch=globalThis.fetch,previousKey=process.env.OPENROUTER_API_KEY,previousModel=process.env.OPENROUTER_MODEL;
+ const bodies=[],model='test/reasoning-modes-unico';
+ process.env.OPENROUTER_API_KEY='synthetic-key';process.env.OPENROUTER_MODEL=model;
+ globalThis.fetch=async(url,options={})=>{
+  if(String(url).endsWith('/models'))return {ok:true,json:async()=>({data:[{id:model,context_length:200000,supported_parameters:['reasoning'],reasoning:{mandatory:false,supported_efforts:['low','none']}}]})};
+  bodies.push(JSON.parse(options.body));
+  return {ok:true,json:async()=>({status:'completed',output_text:JSON.stringify({complete:true,findings:[],candidates:[],comparisons:[]})})};
+ };
+ const plan={tasks:'none',objective:'resumir',needs_tasks:false,history:false,originals:false};
+ try{
+  await reviewProjectBatch(plan,[{number:1,kind:'sintese',title:'t',text:'a'}],[]);
+  await compareProjectTasks([{id:1,action:'Conferir cabo'}],[{id:2,description:'Conferir cabo'}]);
+  assert.deepEqual(bodies[0].reasoning,{enabled:false});
+  assert.deepEqual(bodies[1].reasoning,{effort:'low'});
+ }finally{
+  globalThis.fetch=previousFetch;
+  if(previousKey===undefined)delete process.env.OPENROUTER_API_KEY;else process.env.OPENROUTER_API_KEY=previousKey;
+  if(previousModel===undefined)delete process.env.OPENROUTER_MODEL;else process.env.OPENROUTER_MODEL=previousModel;
+ }
 });
