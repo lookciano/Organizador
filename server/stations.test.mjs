@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildStationRegistry, canonicalStation, canonicalStations, normalizeStation, stationKey, stationListForPrompt } from './stations.mjs';
+import { buildStationRegistry, canonicalStation, canonicalStations, normalizeStation, stationKey, stationListForPrompt, stationGlossaryBlock } from './stations.mjs';
 
 test('registro canônico traz as 15 subestações e as 2 frentes de Jussiape', () => {
   const registry = buildStationRegistry([]);

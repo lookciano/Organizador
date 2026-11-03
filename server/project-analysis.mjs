@@ -93,6 +93,31 @@ export function makeChunks(documents, maxChars=5000) {
   }
   return chunks;
 }
+// Monta o lote da revisão mantendo cada documento inteiro dentro do mesmo lote.
+// Sem isso, um trecho originado de divisão (parte 2 de uma síntese, por exemplo)
+// cai no fim da fila e a IA lê o registro pela metade, interpretando o contexto errado.
+export function groupBatchByDocument(chunks, maxChars = 32000) {
+  const measure = (chunk) => JSON.stringify(chunk).length;
+  const groups = new Map();
+  for (const chunk of chunks) {
+    const key = `${chunk.kind || ''}|${chunk.id || chunk.number}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(chunk);
+  }
+  const batch = [];
+  let size = 0;
+  for (const group of groups.values()) {
+    const total = group.reduce((sum, chunk) => sum + measure(chunk), 0);
+    if (batch.length && size + total > maxChars) break;
+    for (const chunk of group) {
+      const cost = measure(chunk);
+      if (batch.length && size + cost > maxChars) return batch;
+      batch.push(chunk); size += cost;
+    }
+  }
+  return batch;
+}
+
 export function batchBySize(values, maxChars=16000, measure=value=>JSON.stringify(value).length) {
   const batches=[];let batch=[],size=0;
   for(const value of values){const n=measure(value);if(batch.length && size+n>maxChars){batches.push(batch);batch=[];size=0;}batch.push(value);size+=n;}

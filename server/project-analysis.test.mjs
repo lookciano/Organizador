@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {loadProjectCorpus,readAllPages,topicPaths,makeChunks,batchBySize,validateFindings,uniqueCandidates,validateMatches,finishComparisons} from './project-analysis.mjs';
+import {loadProjectCorpus,readAllPages,topicPaths,makeChunks,batchBySize,groupBatchByDocument,validateFindings,uniqueCandidates,validateMatches,finishComparisons} from './project-analysis.mjs';
 import {reportFitsContext,reportReasoningOptions,reviewProjectBatch,compareProjectTasks} from './ai.mjs';
 import {publicAnalysis} from './analysis-jobs.mjs';
 
@@ -112,6 +112,41 @@ test('extraction and consolidation disable reasoning while task comparison keeps
   await compareProjectTasks([{id:1,action:'Conferir cabo'}],[{id:2,description:'Conferir cabo'}]);
   assert.deepEqual(bodies[0].reasoning,{enabled:false});
   assert.deepEqual(bodies[1].reasoning,{effort:'low'});
+ }finally{
+  globalThis.fetch=previousFetch;
+  if(previousKey===undefined)delete process.env.OPENROUTER_API_KEY;else process.env.OPENROUTER_API_KEY=previousKey;
+  if(previousModel===undefined)delete process.env.OPENROUTER_MODEL;else process.env.OPENROUTER_MODEL=previousModel;
+ }
+});
+
+test('review batches keep every part of the same document together', () => {
+  const chunks=[{number:1,kind:'sintese',id:'a',title:'Tópico A',text:'a'.repeat(40)},{number:2,kind:'sintese',id:'b',title:'Tópico B',text:'b'.repeat(40)},{number:3,kind:'sintese',id:'a',title:'Tópico A',part:2,text:'a2'.repeat(20)}];
+  assert.deepEqual(groupBatchByDocument(chunks,32000).map(c=>c.number),[1,3,2]);
+  assert.deepEqual(groupBatchByDocument([],32000),[]);
+  // Um único documento maior que o teto ainda é lido sozinho, nunca descartado.
+  const heavy=[{number:1,kind:'sintese',id:'x',text:'y'.repeat(4000)},{number:2,kind:'sintese',id:'z',text:'y'.repeat(4000)}];
+  assert.deepEqual(groupBatchByDocument(heavy,100).map(c=>c.number),[1]);
+});
+
+test('the canonical place list goes into the review prompt before the variable content',async()=>{
+ const previousFetch=globalThis.fetch,previousKey=process.env.OPENROUTER_API_KEY,previousModel=process.env.OPENROUTER_MODEL;
+ const sent=[],model='test/glossary-unique';
+ process.env.OPENROUTER_API_KEY='synthetic-key';process.env.OPENROUTER_MODEL=model;
+ globalThis.fetch=async(url,options={})=>{
+  if(String(url).endsWith('/models'))return {ok:true,json:async()=>({data:[{id:model,context_length:200000}]})};
+  sent.push(JSON.parse(options.body));
+  return {ok:true,json:async()=>({status:'completed',output_text:JSON.stringify({complete:true,findings:[],candidates:[]})})};
+ };
+ const registry=[{canonical:'São João do Paraíso',labels:['São João do Paraíso','SJP']}];
+ const plan={tasks:'none',objective:'resumir',needs_tasks:false,history:false,originals:false};
+ try{
+  await reviewProjectBatch(plan,[{number:1,kind:'sintese',id:'a',title:'t',text:'a'}],[],registry);
+  const system=sent[0].input[0].content;
+  assert.match(system,/Locais canônicos do projeto/);
+  assert.match(system,/SJP/);
+  assert.ok(system.indexOf('Locais canônicos do projeto')<system.indexOf('Você está lendo uma parte'));
+  await reviewProjectBatch(plan,[{number:1,kind:'sintese',id:'a',title:'t',text:'a'}],[],[]);
+  assert.doesNotMatch(sent[1].input[0].content,/Locais canônicos do projeto/);
  }finally{
   globalThis.fetch=previousFetch;
   if(previousKey===undefined)delete process.env.OPENROUTER_API_KEY;else process.env.OPENROUTER_API_KEY=previousKey;

@@ -173,11 +173,27 @@ export function buildStationRegistry(nodes = []) {
 
 // Lista compacta para o prompt: nome canônico e as variações que devem apontar para ele.
 export function stationListForPrompt(registry = [], { maxAliases = 5 } = {}) {
-  return registry.map((entry) => {
+  return (registry || []).map((entry) => {
     const canonicalKey = normalizeStation(entry.canonical);
     const aliases = entry.labels.filter((label) => normalizeStation(label) !== canonicalKey).slice(0, maxAliases);
     return aliases.length ? `- ${entry.canonical} (também citada como: ${aliases.join('; ')})` : `- ${entry.canonical}`;
   }).join('\n');
+}
+
+// Bloco invariante para o INÍCIO do prompt: a lista fechada de locais canônicos.
+// Sem isso a IA escreve o local como apareceu no texto ("SE Ourolândia", "SJP") e a
+// mesma subestação se fragmenta; com a lista adiante, ela converte para o canônico.
+// O texto é estável dentro de um projeto, então também serve de prefixo cacheável.
+export function stationGlossaryBlock(registry = []) {
+  const list = stationListForPrompt(registry);
+  if (!list) return '';
+  const scopeNames = registry
+    .map((entry) => entry.canonical)
+    .filter((name) => /\([^)]+\)/.test(name));
+  const scopeRule = scopeNames.length > 1
+    ? `\nFrentes distintas na mesma subestação: ${scopeNames.join(' e ')} são registros separados; mantenha os fatos de cada frente no seu próprio escopo e nunca os misture.`
+    : '';
+  return `\n\nLocais canônicos do projeto (lista fechada; em qualquer campo de local use exatamente um destes nomes, nunca uma variação):\n${list}${scopeRule}`;
 }
 
 // Resolve uma menção livre para o nome canônico. Devolve '' quando não há
