@@ -171,19 +171,37 @@ async function performStep(row,token,session) {
     await checkpoint(row.id,token,{phase:'complete',coverage,completed:p.completed,total:p.total,compareIndex:p.compareIndex,compareTotal:p.compareTotal},async()=>{},result);
   }
 }
+const MAX_CHAIN_STEPS=Math.max(1,Number(process.env.ANALYSIS_CHAIN_STEPS)||40);
 async function advance(row,token,session) {
-  const started=Date.now(),phase=json(row.progress_json).phase;
   active.add(row.id);
   const heartbeat=setInterval(()=>{db().execute('UPDATE knowledge_analyses SET lease_until=? WHERE id=? AND state=? AND lease_token=?',[leaseEnd(),row.id,'working',token]).catch(()=>{});},30000);
   heartbeat.unref();
-  try{await performStep(row,token,session);console.info('project_analysis_step:',phase,'duration_ms',Date.now()-started);}catch(error){
-    // Provider responses may contain private text: log categories only.
-    const validationCodes={'Evidência inválida na análise.':'INVALID_EVIDENCE','Proposta sem evidência válida.':'INVALID_CANDIDATE','Etapa muito extensa. Reduza o lote e retome.':'OVERSIZED_OUTPUT','Reduction discarded findings':'EMPTY_REDUCTION','Reduction did not converge':'REDUCTION_NOT_SMALLER','Invalid analysis plan':'INVALID_PLAN','Incomplete coverage':'INCOMPLETE_COVERAGE','Incomplete single passage':'INCOMPLETE_PASSAGE'};
-    const category=/^[A-Z_0-9]+$/.test(error.code||'')?error.code:validationCodes[error.message]|| (error.name==='TimeoutError'?'PROVIDER_TIMEOUT':/Falha na análise/.test(error.message)?'PROVIDER_ERROR':/IA.*(JSON|interrompeu|concluiu)/.test(error.message)?'PROVIDER_INCOMPLETE':'VALIDATION_OR_STEP_ERROR');
-    const frame=String(error.stack||'').match(/\/(?:server)\/([a-z-]+\.mjs):([0-9]+):[0-9]+/);
-    console.warn('project_analysis_paused:',phase,category,'duration_ms',Date.now()-started,...(frame?['location',`${frame[1]}:${frame[2]}`]:[]));
-    const p=json(row.progress_json);p.error=category==='DIRECT_ANSWER_INCOMPLETE'?'A IA não concluiu a resposta nesta tentativa. Você pode retomar; a leitura em etapas não foi iniciada.':'Esta etapa não foi concluída. O progresso anterior foi salvo; tente retomar.';
-    await db().execute('UPDATE knowledge_analyses SET state=?,progress_json=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=? AND state=? AND lease_token=?',['paused',JSON.stringify(p),now(),row.id,'working',token]).catch(()=>{});
+  let current=row,steps=0;
+  try{
+    for(;steps<MAX_CHAIN_STEPS;steps++){
+      const started=Date.now(),phase=json(current.progress_json).phase;
+      try{await performStep(current,token,session);console.info('project_analysis_step:',phase,'duration_ms',Date.now()-started);}catch(error){
+        // Provider responses may contain private text: log categories only.
+        const validationCodes={'Evidência inválida na análise.':'INVALID_EVIDENCE','Proposta sem evidência válida.':'INVALID_CANDIDATE','Etapa muito extensa. Reduza o lote e retome.':'OVERSIZED_OUTPUT','Reduction discarded findings':'EMPTY_REDUCTION','Reduction did not converge':'REDUCTION_NOT_SMALLER','Invalid analysis plan':'INVALID_PLAN','Incomplete coverage':'INCOMPLETE_COVERAGE','Incomplete single passage':'INCOMPLETE_PASSAGE'};
+        const category=/^[A-Z_0-9]+$/.test(error.code||'')?error.code:validationCodes[error.message]|| (error.name==='TimeoutError'?'PROVIDER_TIMEOUT':/Falha na análise/.test(error.message)?'PROVIDER_ERROR':/IA.*(JSON|interrompeu|concluiu)/.test(error.message)?'PROVIDER_INCOMPLETE':'VALIDATION_OR_STEP_ERROR');
+        const frame=String(error.stack||'').match(/\/(?:server)\/([a-z-]+\.mjs):([0-9]+):[0-9]+/);
+        console.warn('project_analysis_paused:',phase,category,'duration_ms',Date.now()-started,...(frame?['location',`${frame[1]}:${frame[2]}`]:[]));
+        const p=json(current.progress_json);p.error=category==='DIRECT_ANSWER_INCOMPLETE'?'A IA não concluiu a resposta nesta tentativa. Você pode retomar; a leitura em etapas não foi iniciada.':'Esta etapa não foi concluída. O progresso anterior foi salvo; tente retomar.';
+        await db().execute('UPDATE knowledge_analyses SET state=?,progress_json=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=? AND state=? AND lease_token=?',['paused',JSON.stringify(p),now(),row.id,'working',token]).catch(()=>{});
+        return;
+      }
+      // O job segue no servidor enquanto houver etapa pronta: evita um round-trip HTTP e um poll por lote.
+      const nextToken=randomUUID();
+      const [claim]=await db().execute("UPDATE knowledge_analyses SET state='working',lease_token=?,lease_until=?,updated_at=? WHERE id=? AND state='ready'",[nextToken,leaseEnd(),now(),row.id]);
+      if(!claim.affectedRows)return;
+      const [[fresh]]=await db().execute('SELECT * FROM knowledge_analyses WHERE id=?',[row.id]);
+      if(!fresh)return;
+      token=nextToken;current=fresh;
+    }
+    console.info('project_analysis_chain:','limit_reached','steps',steps);
+  }catch(error){
+    // Nunca deixar a cadeia virar rejeição não tratada: o processo inteiro cairia.
+    console.error('project_analysis_chain_failed:',error?.name||'Error',/^[A-Z_0-9]+$/.test(error?.code||'')?error.code:'');
   }finally{clearInterval(heartbeat);active.delete(row.id);}
 }
 export function stagedContinuation(progress) {

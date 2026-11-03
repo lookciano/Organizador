@@ -340,6 +340,26 @@ test('PR #1: TiDB migration, authorization and regression', { skip: !target, tim
     }
     assert.fail('Member analysis did not finish');
   });
+  await t.test('one advance call chains the staged steps without a client round-trip per batch',async()=>{
+    const latest=await request(`${analysisBase}/latest`);
+    if(latest.data.analysis&&!['complete','cancelled'].includes(latest.data.analysis.state))await request(`${analysisBase}/${latest.data.analysis.id}/cancel`,{method:'POST',body:{}});
+    const id=randomUUID();
+    try{
+      const created=await request(analysisBase,{method:'POST',body:{id,question:'Resuma as pendências do projeto'}});
+      assert.equal(created.status,201);
+      const first=await request(`${analysisBase}/${id}/advance`,{method:'POST',body:{}});assert.equal(first.status,202);
+      let value=first.data;
+      for(let i=0;i<200&&['ready','working'].includes(value.state);i++){
+        await new Promise(resolve=>setTimeout(resolve,50));
+        value=(await request(`${analysisBase}/${id}`)).data;
+      }
+      assert.equal(value.state,'complete');
+      assert.ok(value.progress.completed>0);
+    } finally {
+      // Nunca deixar um job pendente: bloquearia as análises seguintes da suíte.
+      await request(`${analysisBase}/${id}/cancel`,{method:'POST',body:{}}).catch(()=>{});
+    }
+  });
   await t.test('provider failure pauses honestly; resume and concurrent advance do not duplicate results',async()=>{
     const id=randomUUID();await request(analysisBase,{method:'POST',body:{id,question:'Comparar e pausar uma vez para teste'}});
     const paused=await advanceAnalysis(id);assert.equal(paused.state,'paused');assert.equal(paused.result,null);
