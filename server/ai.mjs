@@ -187,6 +187,7 @@ async function requestAnalysis({ system, content, schema, name, maxOutputTokens 
   const useOpenRouter = Boolean(process.env.OPENROUTER_API_KEY);
   const apiKey = useOpenRouter ? process.env.OPENROUTER_API_KEY : process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('Configure OPENROUTER_API_KEY ou OPENAI_API_KEY para ativar a análise');
+  const startedAt=Date.now();
   const capabilities=useOpenRouter&&(name.startsWith('project_analysis_')||name==='knowledge_answer')?await reportModelCapabilities():null;
   const reasoning=reportReasoningOptions(capabilities,reasoningMode);
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -231,12 +232,22 @@ async function requestAnalysis({ system, content, schema, name, maxOutputTokens 
       throw new Error(`A IA interrompeu a resposta de ${name}: ${error.message}`);
     }
     const raw = outputText(result);
-    if(name==='knowledge_answer'){
-      const count=n=>Number.isSafeInteger(n)&&n>=0?n:null;
-      const status=['completed','incomplete','failed'].includes(result.status)?result.status:'other';
-      const reason=['max_output_tokens','content_filter'].includes(result.incomplete_details?.reason)?result.incomplete_details.reason:result.incomplete_details?'other':null;
-      console.info('project_analysis_provider:',JSON.stringify({status,reason,output_tokens:count(result.usage?.output_tokens),reasoning_tokens:count(result.usage?.output_tokens_details?.reasoning_tokens),text_characters:raw.length}));
-    }
+    // Telemetria de custo e velocidade: só números e categorias, nunca pergunta,
+    // evidência ou texto gerado. Sem isso, otimizar latência é chute.
+    const integer=n=>Number.isSafeInteger(n)&&n>=0?n:null;
+    console.info('ai_call:',JSON.stringify({
+      name,
+      attempt:attempt+1,
+      duration_ms:Date.now()-startedAt,
+      status:['completed','incomplete','failed'].includes(result.status)?result.status:'other',
+      incomplete_reason:['max_output_tokens','content_filter'].includes(result.incomplete_details?.reason)?result.incomplete_details.reason:result.incomplete_details?'other':null,
+      reasoning:reasoning?('enabled' in reasoning?String(reasoning.enabled):String(reasoning.effort)):'none',
+      input_tokens:integer(result.usage?.input_tokens),
+      cached_tokens:integer(result.usage?.input_tokens_details?.cached_tokens),
+      output_tokens:integer(result.usage?.output_tokens),
+      reasoning_tokens:integer(result.usage?.output_tokens_details?.reasoning_tokens),
+      text_characters:raw.length,
+    }));
     if (result.error) {
       const message = String(result.error.message || result.error.code || 'erro desconhecido').slice(0, 240);
       if (canRetry && /stream closed|upstream|timeout|temporar|overload|rate limit|internal error/i.test(message)) {

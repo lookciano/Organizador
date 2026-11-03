@@ -263,3 +263,51 @@ lados:
 Nenhuma alteração de banco: sem migration, sem `ALTER`, sem escrita em dados existentes.
 Os limites são ajustáveis por ambiente (`EXTRACTION_CONCURRENCY`, `SUMMARY_CONCURRENCY`,
 `EXECUTIVE_CONCURRENCY`) para respeitar a taxa do provedor.
+
+---
+
+## 7. Rodada P1, P2 e P3
+
+### P1 — raciocínio só onde há julgamento, e etapas encadeadas
+
+| Etapa | Antes | Depois |
+|---|---|---|
+| `project_analysis_review` (extração) | `effort: low` | **desligado** |
+| `project_analysis_reduce` (consolidação) | `effort: low` | **desligado** |
+| `project_analysis_plan` | `effort: low` | **desligado** |
+| `project_analysis_compare` (tarefas) | `effort: low` | `effort: low` |
+| `knowledge_answer` direta | desligado | desligado |
+| `knowledge_answer` em etapas | `effort: low` | `effort: low` |
+
+O desligamento só acontece quando o modelo declara `mandatory:false` e aceita `none`;
+fora disso permanece `effort: low`. A comparação de tarefas mantém o raciocínio porque
+ali a decisão é de julgamento (mesma ação? reabertura?), não de extração.
+
+O encadeamento remove a espera entre etapas: cada lote exigia um `POST /advance` do
+cliente e um poll de 0,5 a 2 s. Agora o servidor re-claima o lease e segue sozinho até
+concluir, pausar ou atingir `ANALYSIS_CHAIN_STEPS` (padrão 40).
+
+### P2 — lista fechada de locais e lote por documento
+
+`stationGlossaryBlock()` põe no início do prompt os nomes canônicos e as grafias aceitas,
+mais o aviso de que `Jussiape (GST)` e `Jussiape (TAESA)` são frentes separadas. Entra na
+leitura por lotes, na síntese de tópico e na resposta. Sem estrutura cadastrada o bloco
+não é gerado — projeto sem estações não recebe local inventado.
+
+`groupBatchByDocument()` mantém todas as partes de um mesmo documento no mesmo lote. Antes,
+a parte criada por divisão (quando a IA responde `complete=false`) recebia número novo no
+fim da fila e era lida sem o resto do registro.
+
+### P3 — telemetria de custo
+
+Toda chamada passa a registrar `ai_call:` com nome, tentativa, duração, status, motivo de
+incompletude, modo de raciocínio e tokens de entrada, cache, saída e raciocínio. Nenhum
+texto de pergunta, evidência ou resposta entra no log.
+
+Com isso dá para responder o que antes era suposição: quanto do prefixo está sendo
+reaproveitado (`cached_tokens`) e quanto do orçamento de saída o raciocínio consome
+(`reasoning_tokens`).
+
+### Validação
+
+96 testes unitários, 18 de interface e 41 de integração em TiDB descartável.
