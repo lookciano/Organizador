@@ -161,6 +161,7 @@ const schema = [
   `CREATE TABLE IF NOT EXISTS topic_summaries (
     node_id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL,
     revision CHAR(64) NOT NULL, summary LONGTEXT NOT NULL,
+    state_json LONGTEXT NULL,
     important_change TEXT NOT NULL, analysis_status VARCHAR(30) NOT NULL,
     analysis_error TEXT, generated_at VARCHAR(30),
     INDEX (project_id), INDEX (analysis_status)
@@ -180,6 +181,7 @@ const schema = [
   `CREATE TABLE IF NOT EXISTS topic_executive_summaries (
     node_id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL,
     source_hash CHAR(64) NOT NULL, summary LONGTEXT NOT NULL,
+    section_state_json LONGTEXT NULL,
     analysis_status VARCHAR(30) NOT NULL, analysis_error TEXT,
     generated_at VARCHAR(30), INDEX (project_id), INDEX (analysis_status)
   )`,
@@ -224,6 +226,10 @@ export async function initializeDatabase() {
       const [columns] = await connection.execute('SELECT DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?', [table, 'summary']);
       if (columns[0]?.DATA_TYPE?.toLowerCase() !== 'longtext') await connection.query(`ALTER TABLE \`${table}\` MODIFY COLUMN summary LONGTEXT NOT NULL`);
     }
+    const [stateColumns] = await connection.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='topic_summaries' AND COLUMN_NAME='state_json'");
+    if (!stateColumns.length) await connection.query('ALTER TABLE topic_summaries ADD COLUMN state_json LONGTEXT NULL');
+    const [executiveStateColumns] = await connection.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='topic_executive_summaries' AND COLUMN_NAME='section_state_json'");
+    if (!executiveStateColumns.length) await connection.query('ALTER TABLE topic_executive_summaries ADD COLUMN section_state_json LONGTEXT NULL');
     await addCommissioningStations(connection);
     // Padroniza os títulos das subestações (nome canônico do edital) e cria as folhas
     // de Pilões III. Roda uma vez por projeto, registrado em app_migrations.

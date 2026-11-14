@@ -4,6 +4,7 @@ import { structurePaths, summarizeTopicHistory, incrementalCutoff } from './ai.m
 import { loadProjectContext, selectProjectContext } from './project-context.mjs';
 import { prepareExecutiveSummaries } from './executive-summaries.mjs';
 import { buildStationRegistry } from './stations.mjs';
+import { parseLegacySummary } from './summary-state.mjs';
 
 const hasModelKey = () => Boolean(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
 const SUMMARY_VERSION = 8;
@@ -46,7 +47,7 @@ function fingerprint(topicPath, items, isMainSection = false, paths = new Map(),
 }
 
 async function generate(nodeId, projectId, revision) {
-  const [rows] = await db().execute('SELECT revision,analysis_status FROM topic_summaries WHERE node_id=? AND project_id=?', [nodeId, projectId]);
+  const [rows] = await db().execute('SELECT revision,analysis_status,summary,state_json,generated_at FROM topic_summaries WHERE node_id=? AND project_id=?', [nodeId, projectId]);
   if (!rows.length || rows[0].revision !== revision || !['pending', 'processing'].includes(rows[0].analysis_status)) return;
   await db().execute("UPDATE topic_summaries SET analysis_status=? WHERE node_id=? AND revision=? AND analysis_status IN ('pending','processing')", ['processing', nodeId, revision]);
   const started = Date.now();
@@ -80,7 +81,7 @@ async function generate(nodeId, projectId, revision) {
     const path = paths.get(nodeId) || node.title;
     for (const item of items) item.node_path = paths.get(item.node_id) || '';
     const [[priorSummaries], [progressRows], contextEntries] = await Promise.all([
-      db().execute('SELECT revision,summary,generated_at FROM topic_summary_history WHERE node_id=? AND project_id=? AND revision<>? ORDER BY generated_at,revision', [nodeId, projectId, revision]),
+      db().execute('SELECT revision,summary,generated_at FROM topic_summary_history WHERE node_id=? AND project_id=? AND revision<>? ORDER BY generated_at DESC,revision DESC LIMIT 1', [nodeId, projectId, revision]),
       db().execute('SELECT completed_count,result_json FROM topic_summary_progress WHERE node_id=? AND project_id=? AND revision=?', [nodeId, projectId, revision]),
       loadProjectContext(projectId),
     ]);
@@ -96,10 +97,18 @@ async function generate(nodeId, projectId, revision) {
     // Síntese incremental: quando já existe uma síntese anterior, o histórico até
     // aquela data já está condensado nela. Reenviamos só o que veio depois, mais o
     // estado atual. Sem síntese anterior (primeira geração), lê o histórico inteiro.
-    const incrementalSince = incrementalCutoff(priorSummaries, updates);
+    let priorState = null;
+    if (rows[0].summary?.trim() && rows[0].generated_at) {
+      try {
+        const parsed = JSON.parse(rows[0].state_json || 'null');
+        if (Array.isArray(parsed) && parsed.every((bullet) => bullet && typeof bullet.item_id === 'string' && typeof bullet.text === 'string' && Array.isArray(bullet.locations))) priorState = parsed;
+      } catch { /* A síntese legada pode não ter estado estruturado. */ }
+      if (!priorState) priorState = parseLegacySummary(rows[0].summary, items, !node.parent_id, rows[0].generated_at);
+    }
+    const incrementalSince = priorState ? incrementalCutoff([rows[0]], updates) || rows[0].generated_at : '';
     const model = process.env.OPENROUTER_API_KEY ? process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4.1-flash-1017' : process.env.OPENAI_MODEL || 'gpt-4.1-mini';
-    console.info('Iniciando síntese:', nodeId, { modelo: model, assuntos: items.length, registros: updates.length, sintesesAnteriores: priorSummaries.length, retomandoDe: resumeProgress?.completed_count || 0, recorteIncremental: incrementalSince || 'completo', subestacoes: stationRegistry.length });
-    const result = await summarizeTopicHistory({ projectName: projects[0].name, topicPath: path, items, updates, priorSummaries, isMainSection: !node.parent_id, projectContext, resumeProgress, incrementalSince, stationRegistry,
+    console.info('Iniciando síntese:', nodeId, { modelo: model, assuntos: items.length, registros: updates.length, memoriaEstruturada: Boolean(priorState), retomandoDe: resumeProgress?.completed_count || 0, recorteIncremental: incrementalSince || 'completo', subestacoes: stationRegistry.length });
+    const result = await summarizeTopicHistory({ projectName: projects[0].name, topicPath: path, items, updates, priorSummaries, priorState, isMainSection: !node.parent_id, projectContext, resumeProgress, incrementalSince, stationRegistry,
       onProgress: async ({ completed, total, result: partial }) => {
         await db().execute(`INSERT INTO topic_summary_progress (node_id,project_id,revision,completed_count,result_json,updated_at)
           SELECT node_id,project_id,revision,?,?,? FROM topic_summaries
@@ -113,8 +122,8 @@ async function generate(nodeId, projectId, revision) {
     const connection = await db().getConnection();
     try {
       await connection.beginTransaction();
-      const [saved] = await connection.execute("UPDATE topic_summaries SET summary=?,important_change=?,analysis_status='completed',analysis_error=NULL,generated_at=? WHERE node_id=? AND project_id=? AND revision=? AND analysis_status='processing'",
-        [result.summary, result.importantChange, generatedAt, nodeId, projectId, revision]);
+      const [saved] = await connection.execute("UPDATE topic_summaries SET summary=?,state_json=?,important_change=?,analysis_status='completed',analysis_error=NULL,generated_at=? WHERE node_id=? AND project_id=? AND revision=? AND analysis_status='processing'",
+        [result.summary, JSON.stringify(result.state), result.importantChange, generatedAt, nodeId, projectId, revision]);
       if (saved.affectedRows) await connection.execute('INSERT IGNORE INTO topic_summary_history (node_id,project_id,revision,summary,important_change,generated_at) VALUES (?,?,?,?,?,?)',
         [nodeId, projectId, revision, result.summary, result.importantChange, generatedAt]);
       if (saved.affectedRows) await connection.execute('DELETE FROM topic_summary_progress WHERE node_id=? AND project_id=? AND revision=?', [nodeId, projectId, revision]);

@@ -832,13 +832,13 @@ test('síntese incremental reenvia só o delta posterior à síntese anterior', 
   }
 });
 
-test('o corte incremental só é usado quando a maior parte do histórico já está consolidada', () => {
+test('a memória consolidada é usada mesmo quando há muitas novidades', () => {
   const prior = [{ generated_at: '2026-10-01T10:00:00Z', summary: '• Síntese anterior.' }];
   const many = Array.from({ length: 10 }, (_, i) => ({ created_at: `2026-09-${String(10 + i).padStart(2, '0')}T10:00:00Z` }));
   const oneNew = [...many, { created_at: '2026-10-05T10:00:00Z' }];
   assert.equal(incrementalCutoff(prior, oneNew), '2026-10-01T10:00:00Z');
   const mostlyNew = [...many.slice(0, 2), ...Array.from({ length: 8 }, (_, i) => ({ created_at: `2026-10-${String(5 + i).padStart(2, '0')}T10:00:00Z` }))];
-  assert.equal(incrementalCutoff(prior, mostlyNew), '');
+  assert.equal(incrementalCutoff(prior, mostlyNew), '2026-10-01T10:00:00Z');
   assert.equal(incrementalCutoff([], oneNew), '');
   assert.equal(incrementalCutoff(prior, []), '');
   assert.equal(incrementalCutoff([{ generated_at: '2026-09-01T10:00:00Z', summary: '' }], oneNew), '');
@@ -872,4 +872,79 @@ test('no recorte incremental a síntese anterior vai inteira, inclusive o agrupa
     if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = oldKey;
   }
+});
+
+test('atualização incremental consulta só o assunto alterado e conserva os demais', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const prompts = [];
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    prompts.push(request.input[1].content[0].text);
+    return { ok: true, json: async () => ({ output_text: JSON.stringify({ bullets: [{ item_id: 'b', text: 'O laudo de Ibicoara chegou; conferência pendente.', locations: [] }], important_change: '', changed_item_id: '', change_before: '', change_after: '' }) }) };
+  };
+  const items = [
+    { id: 'a', title: 'Disjuntor', updated_at: '2026-10-01T10:00:00Z', status: 'pendente', summary: 'Inspeção pendente.', responsible: '', supplier: '', due_date: '', attention: 0 },
+    { id: 'b', title: 'Reator', updated_at: '2026-10-05T10:00:00Z', status: 'em_andamento', summary: 'Laudo recebido.', responsible: '', supplier: '', due_date: '', attention: 0 },
+    { id: 'c', title: 'Cubículo', updated_at: '2026-10-01T10:00:00Z', status: 'pendente', summary: 'Projeto pendente.', responsible: '', supplier: '', due_date: '', attention: 0 },
+  ];
+  const priorState = [
+    { item_id: 'a', text: 'Inspeção pendente com Ana.', locations: [] },
+    { item_id: 'b', text: 'Laudo de Ibicoara ainda não chegou.', locations: [] },
+    { item_id: 'c', text: 'Projeto básico pendente com Bruno.', locations: [] },
+  ];
+  try {
+    const result = await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos', items, priorState,
+      priorSummaries: [{ summary: 'texto consolidado', generated_at: '2026-10-02T10:00:00Z' }], incrementalSince: '2026-10-02T10:00:00Z',
+      updates: [{ id: 'novo', item_id: 'b', created_at: '2026-10-05T10:00:00Z', summary: 'O laudo de Ibicoara chegou.', evidence: '', new_status: 'em_andamento', source_title: 'Ata' }],
+    });
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0], /Laudo de Ibicoara ainda não chegou/);
+    assert.match(prompts[0], /O laudo de Ibicoara chegou/);
+    assert.doesNotMatch(prompts[0], /Inspeção pendente com Ana|Projeto básico pendente com Bruno/);
+    assert.match(result.summary, /Inspeção pendente com Ana/);
+    assert.match(result.summary, /laudo de Ibicoara chegou/);
+    assert.match(result.summary, /Projeto básico pendente com Bruno/);
+    assert.equal(result.state.length, 3);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
+
+test('resumo executivo reaproveita subestações sem alterações', async () => {
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const prompts = [];
+  globalThis.fetch = async (_url, options) => {
+    prompts.push(JSON.parse(options.body).input[1].content[0].text);
+    return { ok: true, json: async () => ({ output_text: JSON.stringify({ summary: 'Novo resumo da subestação.' }) }) };
+  };
+  try {
+    const first = await summarizeExecutive({ topicPath: 'Equipamentos', synthesis: '• Subestação Ourolândia\n  ◦ Disjuntor pendente.\n• Subestação Ibicoara\n  ◦ Reator pendente.', returnSections: true });
+    assert.equal(prompts.length, 2);
+    const second = await summarizeExecutive({ topicPath: 'Equipamentos', synthesis: '• Subestação Ourolândia\n  ◦ Disjuntor pendente.\n• Subestação Ibicoara\n  ◦ Reator concluído.', cachedSections: first.sections, returnSections: true });
+    assert.equal(prompts.length, 3);
+    assert.match(prompts[2], /Reator concluído/);
+    assert.match(second.summary, /Subestação Ourolândia/);
+    assert.match(second.summary, /Subestação Ibicoara/);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+  }
+});
+
+test('mudança entre memória consolidada e registro novo continua destacada', async () => {
+  await mockAnalysis({ bullets: [{ item_id: 'a', text: 'Entrega prevista para 22/11.', locations: [] }], important_change: 'Prazo passou de 20/11 para 22/11.', changed_item_id: 'a', change_before: 'Entrega prevista para 20/11.', change_after: 'Entrega prevista para 22/11.' }, async () => {
+    const result = await summarizeTopicHistory({ projectName: 'Teste', topicPath: 'Equipamentos',
+      items: [{ id: 'a', title: 'Reator', updated_at: '2026-11-14T10:00:00Z', status: 'pendente', summary: 'Entrega prevista para 22/11.', responsible: '', supplier: '', due_date: '', attention: 0 }],
+      priorState: [{ item_id: 'a', text: 'Entrega prevista para 20/11.', locations: [] }], incrementalSince: '2026-11-13T10:00:00Z',
+      updates: [{ id: 'nova', item_id: 'a', created_at: '2026-11-14T10:00:00Z', summary: 'Entrega prevista para 22/11.', evidence: '', new_status: 'pendente', source_title: 'Ata' }],
+    });
+    assert.equal(result.importantChange, 'Prazo passou de 20/11 para 22/11.');
+  });
 });

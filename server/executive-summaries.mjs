@@ -15,7 +15,7 @@ const waiting = [];
 let running = 0;
 
 async function generate(nodeId, projectId, hash) {
-  const [rows] = await db().execute('SELECT source_hash,analysis_status FROM topic_executive_summaries WHERE node_id=? AND project_id=?', [nodeId, projectId]);
+  const [rows] = await db().execute('SELECT source_hash,analysis_status,section_state_json FROM topic_executive_summaries WHERE node_id=? AND project_id=?', [nodeId, projectId]);
   if (!rows.length || rows[0].source_hash !== hash || !['pending', 'processing'].includes(rows[0].analysis_status)) return;
   await db().execute("UPDATE topic_executive_summaries SET analysis_status='processing' WHERE node_id=? AND project_id=? AND source_hash=? AND analysis_status IN ('pending','processing')", [nodeId, projectId, hash]);
   try {
@@ -23,13 +23,16 @@ async function generate(nodeId, projectId, hash) {
       WHERE s.node_id=? AND s.project_id=? AND s.analysis_status='completed' AND n.parent_id IS NULL AND n.archived=0`, [nodeId, projectId]);
     if (!sources.length || sourceHash(sources[0].summary) !== hash) return;
     const [nodes] = await db().execute('SELECT id,parent_id,title FROM structure_nodes WHERE project_id=? AND archived=0', [projectId]);
-    const summary = await summarizeExecutive({ topicPath: sources[0].title, synthesis: sources[0].summary, stationRegistry: buildStationRegistry(nodes),
+    let cachedSections = [];
+    try { cachedSections = JSON.parse(rows[0].section_state_json || '[]'); } catch { /* Cache antigo inválido: refazer apenas desta vez. */ }
+    if (!Array.isArray(cachedSections)) cachedSections = [];
+    const result = await summarizeExecutive({ topicPath: sources[0].title, synthesis: sources[0].summary, stationRegistry: buildStationRegistry(nodes), cachedSections, returnSections: true,
       onProgress: ({ completed, total }) => console.info('Progresso do resumo executivo:', nodeId, { subestacoesAnalisadas: completed, total }),
     });
-    const [saved] = await db().execute(`UPDATE topic_executive_summaries SET summary=?,analysis_status='completed',analysis_error=NULL,generated_at=?
+    const [saved] = await db().execute(`UPDATE topic_executive_summaries SET summary=?,section_state_json=?,analysis_status='completed',analysis_error=NULL,generated_at=?
       WHERE node_id=? AND project_id=? AND source_hash=? AND analysis_status='processing'`,
-    [summary, new Date().toISOString(), nodeId, projectId, hash]);
-    if (saved.affectedRows) console.info('Resumo executivo concluído:', nodeId, { caracteres: summary.length });
+    [result.summary, JSON.stringify(result.sections), new Date().toISOString(), nodeId, projectId, hash]);
+    if (saved.affectedRows) console.info('Resumo executivo concluído:', nodeId, { caracteres: result.summary.length, gruposReaproveitados: result.sections.filter((section) => cachedSections.some((old) => old.heading === section.heading && old.source === section.source)).length });
   } catch (error) {
     console.error('Falha no resumo executivo:', nodeId, error);
     await db().execute('UPDATE topic_executive_summaries SET analysis_status=?,analysis_error=? WHERE node_id=? AND project_id=? AND source_hash=?',
@@ -103,7 +106,7 @@ export async function retryExecutiveSummary(projectId, nodeId) {
   const hash = sourceHash(sources[0].summary);
   const status = hasModelKey() ? 'pending' : 'needs_key';
   await db().execute(`INSERT INTO topic_executive_summaries (node_id,project_id,source_hash,summary,analysis_status) VALUES (?,?,?,?,?)
-    ON DUPLICATE KEY UPDATE source_hash=VALUES(source_hash),analysis_status=VALUES(analysis_status),analysis_error=NULL`,
+    ON DUPLICATE KEY UPDATE source_hash=VALUES(source_hash),section_state_json=NULL,analysis_status=VALUES(analysis_status),analysis_error=NULL`,
   [nodeId, projectId, hash, '', status]);
   if (hasModelKey()) schedule(nodeId, projectId, hash);
   return true;
